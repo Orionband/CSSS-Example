@@ -1,8 +1,4 @@
 node_modules/
 captures/
-protected/images/
-protected/pka/
 grader.db
-lab.conf
-quiz.conf
 .env
