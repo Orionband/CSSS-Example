@@ -1,10 +1,12 @@
-﻿const socket = io({ autoConnect: false }); 
+const socket = io({ autoConnect: false }); 
 let currentUser = null;
 let availableChallenges = [];
 let currentChallengeId = null;
 let currentChallengeType = null;
 let quizTimerInterval = null;
+let labTimerInterval = null;
 let quizMetadataCache = null; 
+let csrfToken = null;
 
 const quizView = document.getElementById('view-quiz');
 ['copy', 'paste', 'cut', 'contextmenu'].forEach(evt => {
@@ -20,13 +22,46 @@ function toggleAuth(mode) {
     document.getElementById('auth-error').innerText = '';
 }
 
+async function securePost(url, body = {}) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+    return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+}
+
+async function fetchCsrfToken() {
+    try {
+        const res = await fetch('/api/csrf-token');
+        const data = await res.json();
+        if (data.csrfToken) csrfToken = data.csrfToken;
+    } catch (e) {
+        console.error("Failed to fetch CSRF token");
+    }
+}
+
+function applyBranding(options) {
+    const main = options.app_title_main || 'CSSS';
+    const full = options.app_title || 'CSSS ENGINE';
+
+    const authTitle = document.getElementById('auth-title');
+    authTitle.textContent = full;
+
+    const navBrand = document.getElementById('nav-brand');
+    navBrand.textContent = full;
+
+    document.title = full;
+}
+
+function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(String(str)));
+    return div.innerHTML;
+}
+
 async function login() {
     const user = document.getElementById('l-user').value;
     const pass = document.getElementById('l-pass').value;
-    const res = await fetch('/api/login', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ username: user, password: pass })
-    });
+    const res = await securePost('/api/login', { username: user, password: pass });
     const data = await res.json();
     if(data.success) initApp(data.unique_id);
     else document.getElementById('auth-error').innerText = data.error;
@@ -36,17 +71,15 @@ async function register() {
     const user = document.getElementById('r-user').value;
     const email = document.getElementById('r-email').value;
     const pass = document.getElementById('r-pass').value;
-    const res = await fetch('/api/register', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ username: user, email: email, password: pass })
-    });
+    const res = await securePost('/api/register', { username: user, email: email, password: pass });
     const data = await res.json();
     if(data.success) initApp(data.unique_id);
     else document.getElementById('auth-error').innerText = data.error;
 }
 
 async function logout() {
-    await fetch('/api/logout', { method: 'POST' });
+    await securePost('/api/logout');
+    csrfToken = null;
     location.reload();
 }
 
@@ -64,27 +97,49 @@ function initApp(uid) {
         socket.emit('authenticate', uid);
     });
 
-    fetchConfig();
+    fetchCsrfToken().then(() => fetchConfig());
 }
 
-fetch('/api/me')
-    .then(r => r.json())
-    .then(data => {
-        if(data.unique_id) initApp(data.unique_id);
-        else {
-            document.getElementById('loading-view').classList.add('hidden');
-            document.getElementById('auth-view').classList.remove('hidden');
-        }
-    })
-    .catch(() => {
-        document.getElementById('loading-view').classList.add('hidden');
-        document.getElementById('auth-view').classList.remove('hidden');
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('btn-login-submit')?.addEventListener('click', login);
+    document.getElementById('btn-register-submit')?.addEventListener('click', register);
+    document.getElementById('link-show-register')?.addEventListener('click', () => toggleAuth('register'));
+    document.getElementById('link-show-login')?.addEventListener('click', () => toggleAuth('login'));
+    document.getElementById('btn-logout')?.addEventListener('click', logout);
+    document.getElementById('btn-submit-quiz')?.addEventListener('click', submitQuiz);
+    document.getElementById('upload-area-box')?.addEventListener('click', () => document.getElementById('f').click());
+    document.getElementById('btn-close-history')?.addEventListener('click', closeHistory);
+
+    fetchCsrfToken().then(() => {
+        fetch('/api/me')
+            .then(r => r.json())
+            .then(data => {
+                if(data.unique_id) initApp(data.unique_id);
+                else {
+                    document.getElementById('loading-view').classList.add('hidden');
+                    document.getElementById('auth-view').classList.remove('hidden');
+                    fetch('/api/config').then(r => r.json()).then(d => {
+                        if (d.options) applyBranding(d.options);
+                    }).catch(() => {});
+                }
+            })
+            .catch(() => {
+                document.getElementById('loading-view').classList.add('hidden');
+                document.getElementById('auth-view').classList.remove('hidden');
+                fetch('/api/config').then(r => r.json()).then(d => {
+                    if (d.options) applyBranding(d.options);
+                }).catch(() => {});
+            });
     });
+});
 
 async function fetchConfig() {
     const res = await fetch('/api/config');
     const data = await res.json();
     availableChallenges = data.challenges;
+    
+    if (data.options) applyBranding(data.options);
+    
     renderNav(data.options);
     if(availableChallenges.length > 0) switchTab(availableChallenges[0].id);
 }
@@ -111,7 +166,6 @@ function renderNav(options) {
         nav.appendChild(lb);
     }
     
-    // CONDITIONALLY RENDER HISTORY TAB
     if (options.show_history) {
         const hist = document.createElement('div');
         hist.className = 'nav-item';
@@ -129,6 +183,7 @@ function switchTab(id) {
     document.getElementById('view-leaderboard').classList.add('hidden');
     
     if (quizTimerInterval) clearInterval(quizTimerInterval);
+    if (labTimerInterval) clearInterval(labTimerInterval);
 
     document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
     const activeNav = document.getElementById('nav-' + id);
@@ -147,10 +202,7 @@ function switchTab(id) {
             currentChallengeType = challenge.type;
             if (challenge.type === 'lab') {
                 document.getElementById('view-grader').classList.remove('hidden');
-                document.getElementById('lab-title').innerText = challenge.title;
-                document.getElementById('report').classList.add('hidden');
-                document.getElementById('progress-container').style.display = 'none';
-                document.getElementById('status').innerText = '';
+                loadLabInfo(id);
             } else if (challenge.type === 'quiz') {
                 document.getElementById('view-quiz').classList.remove('hidden');
                 loadQuiz(id);
@@ -158,6 +210,116 @@ function switchTab(id) {
         }
     }
 }
+
+// ===================== LAB START FLOW =====================
+
+async function loadLabInfo(id) {
+    document.getElementById('lab-start-screen').classList.remove('hidden');
+    document.getElementById('lab-active-screen').classList.add('hidden');
+    document.getElementById('report').classList.add('hidden');
+    document.getElementById('progress-container').style.display = 'none';
+    document.getElementById('status').innerText = '';
+
+    const infoArea = document.getElementById('lab-info-area');
+    infoArea.innerHTML = "<div style='text-align:center; padding:20px'>Loading...</div>";
+
+    const res = await fetch(`/api/lab/${id}`);
+    const data = await res.json();
+
+    if (data.error) {
+        infoArea.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`;
+        return;
+    }
+
+    document.getElementById('lab-title').innerText = data.title;
+
+    let timeText = data.time_limit_minutes > 0 ? `${data.time_limit_minutes} Minutes` : "Unlimited";
+    let attemptsText = data.max_submissions > 0 ? `${data.attempts_taken} / ${data.max_submissions}` : `${data.attempts_taken} (Unlimited)`;
+    let pkaText = data.has_pka_file ? "Yes (available after starting)" : "None";
+
+    if (data.session_active) {
+        showLabActive(id, data);
+        return;
+    }
+
+    infoArea.innerHTML = `
+        <div class="quiz-start-screen">
+            <div class="quiz-info-box">
+                <div class="quiz-info-item"><span>Time Limit:</span> ${escapeHtml(timeText)}</div>
+                <div class="quiz-info-item"><span>Attempts:</span> ${escapeHtml(attemptsText)}</div>
+                <div class="quiz-info-item"><span>PKA provided:</span> ${escapeHtml(pkaText)}</div>
+            </div>
+            <br>
+            <button id="btn-start-lab-dyn" data-id="${id}" style="width:auto; font-size:1.2rem; padding:15px 40px;">START LAB</button>
+        </div>
+    `;
+    document.getElementById('btn-start-lab-dyn').addEventListener('click', (e) => startLabSession(e.target.dataset.id));
+}
+
+async function startLabSession(id) {
+    const res = await securePost(`/api/lab/${id}/start`, {});
+    const data = await res.json();
+
+    if (data.error) {
+        alert(data.error);
+        loadLabInfo(id);
+        return;
+    }
+
+    showLabActive(id, data);
+}
+
+function showLabActive(id, data) {
+    document.getElementById('lab-start-screen').classList.add('hidden');
+    document.getElementById('lab-active-screen').classList.remove('hidden');
+    document.getElementById('report').classList.add('hidden');
+    document.getElementById('progress-container').style.display = 'none';
+    document.getElementById('status').innerText = '';
+
+    const challenge = availableChallenges.find(c => c.id === id);
+    document.getElementById('lab-active-title').innerText = challenge ? challenge.title : id;
+
+    const dlArea = document.getElementById('lab-download-area');
+    if (data.has_pka_file) {
+        dlArea.classList.remove('hidden');
+        const dlBtn = document.getElementById('lab-download-btn');
+        dlBtn.href = `/api/lab/${id}/download`;
+        dlBtn.setAttribute('download', '');
+    } else {
+        dlArea.classList.add('hidden');
+    }
+
+    const timerDiv = document.getElementById('lab-timer');
+    if (labTimerInterval) clearInterval(labTimerInterval);
+
+    if (data.time_remaining_seconds !== null && data.time_remaining_seconds !== undefined) {
+        const targetEndTime = Date.now() + (data.time_remaining_seconds * 1000);
+        const updateTimer = () => {
+            const remaining = Math.max(0, Math.floor((targetEndTime - Date.now()) / 1000));
+            const m = Math.floor(remaining / 60);
+            const s = remaining % 60;
+            timerDiv.innerText = `${m}:${s < 10 ? '0' : ''}${s}`;
+
+            if (remaining <= 0) {
+                clearInterval(labTimerInterval);
+                timerDiv.innerText = "TIME'S UP";
+                timerDiv.style.color = '#f44747';
+                alert("Time's up! You can no longer submit for this lab session.");
+                const uploadArea = document.querySelector('#lab-active-screen .upload-area');
+                if (uploadArea) {
+                    uploadArea.style.pointerEvents = 'none';
+                    uploadArea.style.opacity = '0.4';
+                }
+            }
+        };
+        updateTimer();
+        labTimerInterval = setInterval(updateTimer, 1000);
+    } else {
+        timerDiv.innerText = '';
+    }
+}
+
+// ===================== QUIZ FLOW =====================
 
 async function loadQuiz(id) {
     document.getElementById('quiz-result').classList.add('hidden');
@@ -168,7 +330,7 @@ async function loadQuiz(id) {
     const data = await res.json();
     
     if (data.error) {
-        area.innerHTML = `<div class="error-msg">${data.error}</div>`;
+        area.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`;
         document.getElementById('btn-submit-quiz').style.display = 'none';
         document.getElementById('quiz-title').innerText = "Quiz Unavailable";
         return;
@@ -185,14 +347,15 @@ async function loadQuiz(id) {
     area.innerHTML = `
         <div class="quiz-start-screen">
             <div class="quiz-info-box">
-                <div class="quiz-info-item"><span>Time Limit:</span> ${timeText}</div>
-                <div class="quiz-info-item"><span>Attempts:</span> ${attemptsText}</div>
-                <div class="quiz-info-item"><span>Questions:</span> ${data.question_count}</div>
+                <div class="quiz-info-item"><span>Time Limit:</span> ${escapeHtml(timeText)}</div>
+                <div class="quiz-info-item"><span>Attempts:</span> ${escapeHtml(attemptsText)}</div>
+                <div class="quiz-info-item"><span>Questions:</span> ${escapeHtml(String(data.question_count))}</div>
             </div>
             <br>
-            <button onclick="startQuizSession()" style="width:auto; font-size:1.2rem; padding:15px 40px;">START QUIZ</button>
+            <button id="btn-start-quiz-dyn" style="width:auto; font-size:1.2rem; padding:15px 40px;">START QUIZ</button>
         </div>
     `;
+    document.getElementById('btn-start-quiz-dyn').addEventListener('click', startQuizSession);
 }
 
 async function startQuizSession() {
@@ -201,7 +364,7 @@ async function startQuizSession() {
     const area = document.getElementById('quiz-questions-area');
     area.innerHTML = "Fetching questions...";
 
-    const res = await fetch(`/api/quiz/${currentChallengeId}/start`, { method: 'POST' });
+    const res = await securePost(`/api/quiz/${currentChallengeId}/start`, {});
     const data = await res.json();
 
     if(data.error) {
@@ -217,7 +380,7 @@ async function startQuizSession() {
         const card = document.createElement('div');
         card.className = 'quiz-question-card';
         card.dataset.type = q.type;
-        card.innerHTML = `<div class="quiz-q-text">${idx+1}. ${q.text}</div>`;
+        card.innerHTML = `<div class="quiz-q-text">${idx+1}. ${escapeHtml(q.text)}</div>`;
         
         if (q.image) {
             const img = document.createElement('img');
@@ -230,16 +393,11 @@ async function startQuizSession() {
             const pkaLink = document.createElement('a');
             pkaLink.href = `/api/quiz/asset/pka/${q.pka}`;
             pkaLink.download = q.pka;
-            pkaLink.innerHTML = `💾 Download Packet Tracer Exhibit (.pka)`;
+            pkaLink.className = 'lab-download-link';
+            pkaLink.innerHTML = `[ DOWNLOAD ] Packet Tracer Exhibit`;
             pkaLink.style.display = 'inline-block';
             pkaLink.style.marginTop = '10px';
             pkaLink.style.marginBottom = '10px';
-            pkaLink.style.padding = '8px 12px';
-            pkaLink.style.background = '#0d6efd';
-            pkaLink.style.color = '#fff';
-            pkaLink.style.textDecoration = 'none';
-            pkaLink.style.borderRadius = '5px';
-            pkaLink.style.fontWeight = 'bold';
             card.appendChild(pkaLink);
         }
 
@@ -262,7 +420,7 @@ async function startQuizSession() {
             q.leftItems.forEach(item => {
                 const row = document.createElement('div');
                 row.className = 'match-item';
-                row.innerHTML = `<div class="match-left">${item.text}</div>`;
+                row.innerHTML = `<div class="match-left">${escapeHtml(item.text)}</div>`;
                 
                 const dropZone = document.createElement('div');
                 dropZone.className = 'drop-zone';
@@ -332,20 +490,19 @@ async function startQuizSession() {
         area.appendChild(card);
     });
 
-    // SERVER-SYNCHRONIZED SECURE TIMER
     if (quizMetadataCache.time_limit > 0 && data.time_remaining_seconds !== undefined) {
-        let seconds = data.time_remaining_seconds;
+        const targetEndTime = Date.now() + (data.time_remaining_seconds * 1000);
         const timerDiv = document.getElementById('quiz-timer');
         const updateTimer = () => {
-            const m = Math.floor(seconds / 60);
-            const s = seconds % 60;
+            const remaining = Math.max(0, Math.floor((targetEndTime - Date.now()) / 1000));
+            const m = Math.floor(remaining / 60);
+            const s = remaining % 60;
             timerDiv.innerText = `${m}:${s < 10 ? '0' : ''}${s}`;
-            if (seconds <= 0) {
+            if (remaining <= 0) {
                 clearInterval(quizTimerInterval);
                 alert("Time's up! Submitting...");
                 submitQuiz();
             }
-            seconds--;
         };
         updateTimer();
         quizTimerInterval = setInterval(updateTimer, 1000);
@@ -388,11 +545,7 @@ async function submitQuiz() {
         }
     }
 
-    const res = await fetch(`/api/quiz/${currentChallengeId}/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers })
-    });
+    const res = await securePost(`/api/quiz/${currentChallengeId}/submit`, { answers });
     const result = await res.json();
     
     if (result.error) {
@@ -400,7 +553,6 @@ async function submitQuiz() {
         return;
     }
 
-    // Disable inputs after submission
     const allInputs = area.querySelectorAll('input');
     allInputs.forEach(inp => inp.disabled = true);
 
@@ -436,7 +588,7 @@ async function submitQuiz() {
         result.breakdown.forEach(item => {
             const div = document.createElement('div');
             div.className = `quiz-feedback ${item.correct ? 'correct' : 'incorrect'}`;
-            div.innerHTML = `<strong>${item.message}</strong>: ${item.correct ? 'Correct' : 'Incorrect'}<br><small>Explanation: ${item.explanation}</small>`;
+            div.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Incorrect'}<br><small>Explanation: ${escapeHtml(item.explanation)}</small>`;
             feedList.appendChild(div);
         });
     } else {
@@ -445,9 +597,16 @@ async function submitQuiz() {
     window.scrollTo(0,0);
 }
 
+// ===================== LEADERBOARD & HISTORY =====================
+
 async function loadLeaderboard() {
     const res = await fetch('/api/leaderboard');
     const data = await res.json();
+    if (data.error) {
+        alert(data.error);
+        return;
+    }
+    
     const theadRow = document.querySelector('#lb-table thead tr');
     theadRow.innerHTML = '<th>Rank</th><th>User</th>';
     data.labs.forEach(l => {
@@ -461,7 +620,7 @@ async function loadLeaderboard() {
     tbody.innerHTML = '';
     data.leaderboard.forEach((entry, index) => {
         const tr = document.createElement('tr');
-        let html = `<td>#${index + 1}</td><td>${entry.username}</td>`;
+        let html = `<td>#${index + 1}</td><td>${escapeHtml(entry.username)}</td>`;
         data.labs.forEach(l => {
             const score = entry.scores[l.id] || 0;
             html += `<td style="color:#b8b8b8">${score}</td>`;
@@ -491,12 +650,12 @@ async function loadHistory() {
         const item = document.createElement('div');
         item.className = 'history-row';
         const date = new Date(sub.timestamp).toLocaleString();
-        item.onclick = () => showHistoryDetail(sub);
+        item.addEventListener('click', () => showHistoryDetail(sub));
         const challenge = availableChallenges.find(c => c.id === sub.lab_id);
         const title = challenge ? challenge.title : sub.lab_id;
         const scoreText = (sub.score !== null) ? `${sub.score} / ${sub.max_score}` : "Hidden";
         const typeLabel = sub.type === 'quiz' ? '<span class="hist-type type-quiz">QUIZ</span>' : '<span class="hist-type type-lab">LAB</span>';
-        item.innerHTML = `<div><div style="font-weight:bold; color:#fff">${typeLabel} ${title}</div><div class="hist-date">${date}</div></div><div class="hist-score">${scoreText}</div>`;
+        item.innerHTML = `<div><div style="font-weight:bold; color:#fff">${typeLabel} ${escapeHtml(title)}</div><div class="hist-date">${date}</div></div><div class="hist-score">${scoreText}</div>`;
         list.appendChild(item);
     });
 }
@@ -517,10 +676,10 @@ function showHistoryDetail(sub) {
             const row = document.createElement('div');
             if (sub.type === 'quiz') {
                 row.className = `quiz-feedback ${item.correct ? 'correct' : 'incorrect'}`;
-                row.innerHTML = `<strong>${item.message}</strong>: ${item.correct ? 'Correct' : 'Incorrect'}`;
+                row.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Incorrect'}`;
             } else {
                 row.className = 'check-item ' + (item.points >= 0 ? 'gain' : 'penalty');
-                row.innerHTML = `<span>${item.message}</span><span class="pts">${item.points > 0 ? '+'+item.points : item.points}</span>`;
+                row.innerHTML = `<span>${escapeHtml(item.message)}</span><span class="pts">${item.points > 0 ? '+'+item.points : item.points}</span>`;
             }
             cont.appendChild(row);
         });
@@ -531,6 +690,8 @@ function closeHistory() {
     document.getElementById('history-detail').classList.add('hidden');
     document.getElementById('history-list').parentElement.classList.remove('hidden');
 }
+
+// ===================== FILE UPLOAD =====================
 
 const fileInput = document.getElementById('f');
 const progressBar = document.getElementById('progress-bar');
@@ -543,6 +704,7 @@ fileInput.addEventListener('change', (e) => {
     document.getElementById('report').classList.add('hidden');
     document.getElementById('progress-container').style.display = 'block';
     progressBar.style.width = '0%';
+    progressBar.style.background = 'var(--accent)';
     statusText.innerText = "Uploading...";
     fileInput.value = ''; 
     const reader = new FileReader();
@@ -574,7 +736,7 @@ socket.on('result', (data) => {
         data.clientBreakdown.forEach(c => {
             const row = document.createElement('div');
             row.className = 'check-item ' + (c.points >= 0 ? 'gain' : 'penalty');
-            row.innerHTML = `<span>${c.message}</span><span class="pts">${c.points > 0 ? '+'+c.points : c.points}</span>`;
+            row.innerHTML = `<span>${escapeHtml(c.message)}</span><span class="pts">${c.points > 0 ? '+'+c.points : c.points}</span>`;
             checksList.appendChild(row);
         });
     }

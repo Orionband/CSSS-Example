@@ -1,19 +1,23 @@
 ﻿# CSSS Documentation
 
 ## Why?
-*   **Anti-Cheat**: Keeps answers on the server, not in the file.
-*   **Unified**: Labs and Quizzes in one place.
-*   **Competition**: Live leaderboards.
+- The main purpose is to prevent cheating, whether that be through patching packet tracer or any other means. If there are any vulns you would like to report pls dm me at ``a_person9852`` on discord.
+- Labs and quizes in the same place
+- There is a leaderboard wow so cool competition
+- You can customize feedback, like score or check messages.
+- (Hopefully) better grading system with csss-config-builder, especially through "Show Differences Only"
 
 ## Running the Server
 1.  `npm install`
-2.  `node quickstart.js` (Interactive Setup)
+2.  `node quickstart.js` (setup)
 3.  `npm start`
 4.  Access at `http://localhost:3000`
 
 ---
 
 ## 1. Packet Tracer Labs (`lab.conf`)
+It's toml cuz aeacus
+
 
 Defined in `[[labs]]` blocks.
 
@@ -42,12 +46,12 @@ Checks if a specific line exists (or does not exist) exactly as written.
 [[labs.checks]]
 message = "Hostname Configured"
 points = 5
-device = "R1"
+device = "CPD"
     [[labs.checks.pass]]
     type = "ConfigMatch"
     source = "running"
     context = "global"
-    value = "hostname R1"
+    value = "hostname CPD"
 ```
 
 #### 2. ConfigRegex / ConfigRegexNot
@@ -69,13 +73,48 @@ device = "Branch-Switch"
     value = "2960-24TT"
 ```
 
+#### 4. XmlRegex / XmlRegexNot
+Use this to check if a value inside the XML matches a pattern (e.g., Serial Numbers, MAC Addresses).
+
+#### 5. Type5Match / Type5MatchNot
+Use this to securely check MD5 (Type 5) encrypted passwords in the configuration without hardcoding the salt/hash in the grader configuration. 
+
+**Device Mode (enable secret):**
+```toml
+[[labs.checks]]
+message = "Enable secret skibidi"
+points = 10
+device = "R1"
+    [[labs.checks.pass]]
+    type = "Type5Match"
+    mode = "device"
+    password = "skibidi"
+    source = "running"
+    context = "global"
+```
+
+**User Mode (username &lt;user&gt; secret):**
+```toml
+[[labs.checks]]
+message = "Admin user has correct password"
+points = 10
+device = "R1"
+    [[labs.checks.pass]]
+    type = "Type5Match"
+    mode = "user"
+    username = "admin"
+    password = "secretpassword"
+    source = "startup"
+    context = "global"
+```
+
 ### Contexts
 Where the grader looks for the config:
-*   `global`: Top level (hostname, ip route).
-*   `interface [name]`: Inside an interface block.
-*   `router [proto]`: Inside a routing block.
+- `global`: Top level (hostname, ip route).
+- `interface [name]`: Inside an interface block.
+- `router [proto]`: Inside a routing block.
 
-> **Important:** When distributing the packet tracer file to students, **ensure the answer network is deleted** inside the PKA activity wizard.
+### When distributing the packet tracer file, **ensure the answer network is deleted/replaced** inside the PKA activity wizard.
 
 ---
 
@@ -114,3 +153,8 @@ pka = "lab_scenario.pka"  # Placed in protected/pka/lab_scenario.pka
 *   **Protected Assets**: Quiz Exhibits (Images/PKA) are hidden behind a secure API. They cannot be downloaded unless the user is logged in, and the file belongs to an actively `enabled` quiz.
 *   **Sanitized Payloads**: If score display is disabled, the server scrubs the score data entirely from the socket stream.
 *   **TOCTOU Mitigations**: Global memory locks prevent race-condition exploits to bypass `max_submissions`.
+
+## Free Servers & Configuration Builder
+*   You can deploy CSSS to [Koyeb](https://www.koyeb.com/) or [Render](https://render.com/).
+*   Use [cron-job.org](https://console.cron-job.org/login) to ping the server every 10 minutes to prevent sleeping.
+*   User [CSSS Config Builder](https://csss-config-builder.onrender.com/)** to easily generate your `lab.conf` and `quiz.conf` files. 

@@ -28,7 +28,13 @@ db.prepare(`
     )
 `).run();
 
-// Migrations
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS active_locks (
+        lock_key TEXT PRIMARY KEY,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+`).run();
+
 try { db.prepare('SELECT lab_id FROM submissions LIMIT 1').get(); } 
 catch (e) { db.prepare('ALTER TABLE submissions ADD COLUMN lab_id TEXT').run(); }
 
@@ -40,5 +46,20 @@ catch (e) {
     console.log("Migrating DB: Adding 'status' column...");
     db.prepare("ALTER TABLE submissions ADD COLUMN status TEXT DEFAULT 'completed'").run(); 
 }
+
+db.acquireLock = function(key) {
+    try {
+        db.prepare("INSERT INTO active_locks (lock_key) VALUES (?)").run(key);
+        return true;
+    } catch (e) {
+        return false;
+    }
+};
+
+db.releaseLock = function(key) {
+    try {
+        db.prepare("DELETE FROM active_locks WHERE lock_key = ?").run(key);
+    } catch (e) {}
+};
 
 module.exports = db;

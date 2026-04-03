@@ -54,8 +54,8 @@ const { evaluateCondition } = require('./grading');
 
             report("Decompressing", 65);
             
-            // Dynamic XML limitation based on individual lab configuration
-            const limitMb = maxXmlMb || 1125; 
+            // FIX #11: Default lowered from 1125 to 20 MB
+            const limitMb = maxXmlMb || 20; 
             const MAX_XML_OUTPUT = 1024 * 1024 * limitMb; 
             const zlibOptions = { maxOutputLength: MAX_XML_OUTPUT };
 
@@ -66,7 +66,7 @@ const { evaluateCondition } = require('./grading');
                 try {
                     finalXML = zlib.inflateRawSync(s3.subarray(4), zlibOptions).toString();
                 } catch (zlibErr) {
-                    throw new Error("Decompression failed or file too large. Exceeds Lab Max XML Size.");
+                    throw new Error("Decompression failed or file too large.");
                 }
             }
         }
@@ -75,22 +75,38 @@ const { evaluateCondition } = require('./grading');
         const fullConfig = toml.parse(configData);
         
         const labConfig = (fullConfig.labs || []).find(l => l.id === labId);
-        if (!labConfig) throw new Error("Lab configuration not found");
-		finalXML = finalXML.replace(/<!DOCTYPE[^>]*>/gi, ""); //sanitize
-        const parser = new xml2js.Parser();
+        if (!labConfig) throw new Error("Lab configuration not found.");
+
+        // FIX #4: Complete XXE prevention - strip ALL DTD constructs robustly
+        // The old regex <!DOCTYPE[^>]*> fails on multiline and internal subsets
+        // This removes everything between <!DOCTYPE and its true closing >, handling nested brackets
+        finalXML = stripDoctypeCompletely(finalXML);
+        // Also strip any remaining entity references as a defense-in-depth measure
+        finalXML = finalXML.replace(/<!ENTITY[^>]*>/gi, "");
+        // Strip processing instructions that aren't the XML declaration
+        finalXML = finalXML.replace(/<\?(?!xml\s)[^?]*\?>/gi, "");
+
+        const parser = new xml2js.Parser({
+            // FIX #4: xml2js/sax security hardening
+            strict: true,
+            xmlns: false,
+            // Limit entity expansion
+            entityExpansionMaxDepth: 1
+        });
         const xmlObj = await parser.parseStringPromise(finalXML);
         const devMap = {};
         const devList = xmlObj?.PACKETTRACER5_ACTIVITY?.PACKETTRACER5?.[0]?.NETWORK?.[0]?.DEVICES?.[0]?.DEVICE || [];
         
         devList.forEach(d => {
             const nameObj = d.ENGINE[0].NAME[0];
-            const name = nameObj._ || nameObj;
+            const name = String(nameObj._ || nameObj).trim();
             devMap[name] = {
                 xmlRoot: d.ENGINE[0],
                 running: parseCiscoConfig(d.ENGINE?.[0]?.RUNNINGCONFIG?.[0]?.LINE || []),
                 startup: parseCiscoConfig(d.ENGINE?.[0]?.STARTUPCONFIG?.[0]?.LINE || [])
             };
         });
+		
         let currentScore = 0;
         let maxScore = 0;
         const serverResults = [];
@@ -150,6 +166,69 @@ const { evaluateCondition } = require('./grading');
         });
 
     } catch (err) {
-        parentPort.postMessage({ type: 'error', msg: err.message });
+        // FIX #9: Sanitize error messages - never leak internal paths or stack traces
+        const safeMessage = sanitizeErrorMessage(err.message);
+        parentPort.postMessage({ type: 'error', msg: safeMessage });
     }
 })();
+
+/**
+ * FIX #4: Robust DOCTYPE stripping that handles:
+ * - Multiline DOCTYPE declarations
+ * - Internal subsets with nested brackets: <!DOCTYPE foo [ <!ENTITY ...> ]>
+ * - Multiple DOCTYPE declarations
+ */
+function stripDoctypeCompletely(xml) {
+    let result = xml;
+    let safety = 0;
+    
+    while (safety < 10) {
+        const dtStart = result.search(/<!DOCTYPE/i);
+        if (dtStart === -1) break;
+        
+        // Find the true end, accounting for internal subset brackets
+        let depth = 0;
+        let i = dtStart;
+        let found = false;
+        
+        for (; i < result.length; i++) {
+            if (result[i] === '[') depth++;
+            else if (result[i] === ']') depth--;
+            else if (result[i] === '>' && depth <= 0) {
+                found = true;
+                break;
+            }
+        }
+        
+        if (found) {
+            result = result.substring(0, dtStart) + result.substring(i + 1);
+        } else {
+            // Malformed DOCTYPE - strip from start to end of string as safety measure
+            result = result.substring(0, dtStart);
+            break;
+        }
+        safety++;
+    }
+    
+    return result;
+}
+
+/**
+ * FIX #9: Map known error patterns to safe messages.
+ * Never forward raw err.message to the client.
+ */
+function sanitizeErrorMessage(rawMessage) {
+    if (!rawMessage) return "An unknown error occurred during grading.";
+    
+    const msg = rawMessage.toLowerCase();
+    
+    if (msg.includes('file integrity failed')) return "File integrity check failed. The file may be corrupted.";
+    if (msg.includes('decompression failed') || msg.includes('too large')) return "File decompression failed or exceeds size limits.";
+    if (msg.includes('lab configuration not found')) return "Lab configuration not found for the selected lab.";
+    if (msg.includes('unexpected end')) return "The uploaded file appears to be incomplete or corrupted.";
+    if (msg.includes('invalid xml') || msg.includes('not well-formed') || msg.includes('xml')) return "The file contains invalid or malformed data.";
+    if (msg.includes('toml') || msg.includes('parse')) return "Server configuration error. Contact your instructor.";
+    
+    // Default: generic message, never leak the raw error
+    return "An error occurred while processing your submission.";
+}

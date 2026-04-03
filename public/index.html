@@ -13,12 +13,12 @@
     <!-- LOADING OVERLAY -->
     <div id="loading-view">CSSS LOADING...</div>
 
-    <!-- AUTH VIEW (Hidden by default) -->
+    <!-- AUTH VIEW -->
     <div id="auth-view" class="center-wrapper hidden">
         <div class="auth-box">
             <div style="text-align: center; margin-bottom: 30px;">
-                <h1>CSSS <span>ENGINE</span></h1>
-                <p style="color: var(--text-dim)">Cisco Server-sided Scoring System</p>
+                <h1 id="auth-title">CSSS</h1>
+                <p style="color: var(--text-dim)">using a Cisco Server-sided Scoring System</p>
             </div>
             
             <div class="componentContainer">
@@ -26,9 +26,9 @@
                     <h2>Login</h2>
                     <input type="text" id="l-user" placeholder="Username">
                     <input type="password" id="l-pass" placeholder="Password">
-                    <button onclick="login()">Login >></button>
+                    <button id="btn-login-submit">Login >></button>
                     <div class="auth-link">
-                        Don't have an account? <a onclick="toggleAuth('register')">Register</a>
+                        Don't have an account? <a id="link-show-register">Register</a>
                     </div>
                 </div>
 
@@ -37,9 +37,9 @@
                     <input type="text" id="r-user" placeholder="Username">
                     <input type="email" id="r-email" placeholder="Email">
                     <input type="password" id="r-pass" placeholder="Password">
-                    <button onclick="register()">Create Account >></button>
+                    <button id="btn-register-submit">Create Account >></button>
                     <div class="auth-link">
-                        Already have an account? <a onclick="toggleAuth('login')">Login</a>
+                        Already have an account? <a id="link-show-login">Login</a>
                     </div>
                 </div>
 
@@ -48,40 +48,59 @@
         </div>
     </div>
 
-    <!-- APP VIEW (Hidden by default) -->
+    <!-- APP VIEW -->
     <div id="app-view" class="hidden">
         <nav class="sidebar">
             <div class="sidebar-header">
-                <div class="nav-brand">CSSS <span>ENGINE</span></div>
+                <div class="nav-brand" id="nav-brand">CSSS</div>
             </div>
             <div class="nav-links" id="nav-links-container"></div>
             <div class="sidebar-footer">
                 <div id="uid-display"></div>
-                <div class="logout-btn" onclick="logout()">[ LOGOUT ]</div>
+                <div class="logout-btn" id="btn-logout">[ LOGOUT ]</div>
             </div>
         </nav>
 
         <main class="main-content">
             
             <div id="view-grader" class="hidden">
-                <div class="componentContainer">
+                <!-- LAB START SCREEN -->
+                <div id="lab-start-screen" class="componentContainer">
                     <h2 id="lab-title">Challenge</h2>
-                    <p>Upload your Packet Tracer file (.pka/.pkt) to be graded.</p>
-                    <div class="upload-area" onclick="document.getElementById('f').click()">
-                        <div style="font-size: 3rem; color: var(--accent); margin-bottom: 15px;">[ + ]</div>
-                        <div style="font-weight: bold; font-size: 1.1rem;">CLICK TO SELECT FILE</div>
-                        <div style="color: var(--text-dim); font-size: 0.9rem; margin-top: 5px;">.pka or .pkt files supported</div>
-                        <input type="file" id="f" style="display:none" accept=".pka,.pkt">
-                    </div>
-                    <div id="progress-container"><div id="progress-bar"></div></div>
-                    <div id="status"></div>
+                    <div id="lab-info-area"></div>
                 </div>
-                <div id="report" class="componentContainer hidden">
-                    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; padding-bottom:15px; margin-bottom:15px;">
-                        <h2 style="margin:0">Results</h2>
-                        <div id="final-score" style="font-size:2rem; font-weight:bold; color:var(--accent)"></div>
+
+                <!-- LAB ACTIVE SCREEN -->
+                <div id="lab-active-screen" class="hidden">
+                    <div class="componentContainer">
+                        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid #333; padding-bottom: 15px; margin-bottom: 20px;">
+                            <h2 id="lab-active-title" style="margin:0">Lab In Progress</h2>
+                            <div id="lab-timer" class="quiz-timer"></div>
+                        </div>
+                        
+                        <div id="lab-download-area" class="hidden" style="margin-bottom: 20px;">
+                            <a id="lab-download-btn" class="lab-download-link">
+                                 Downlaod Lab File
+                            </a>
+                        </div>
+
+                        <p>Upload your completed Packet Tracer file (.pka/.pkt) to be graded.</p>
+                        <div class="upload-area" id="upload-area-box">
+                            <div style="font-size: 3rem; color: var(--accent); margin-bottom: 15px;">[ + ]</div>
+                            <div style="font-weight: bold; font-size: 1.1rem;">CLICK TO SELECT FILE</div>
+                            <div style="color: var(--text-dim); font-size: 0.9rem; margin-top: 5px;">.pka or .pkt files supported</div>
+                            <input type="file" id="f" style="display:none" accept=".pka,.pkt">
+                        </div>
+                        <div id="progress-container"><div id="progress-bar"></div></div>
+                        <div id="status"></div>
                     </div>
-                    <div id="checks-list"></div>
+                    <div id="report" class="componentContainer hidden">
+                        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #333; padding-bottom:15px; margin-bottom:15px;">
+                            <h2 style="margin:0">Results</h2>
+                            <div id="final-score" style="font-size:2rem; font-weight:bold; color:var(--accent)"></div>
+                        </div>
+                        <div id="checks-list"></div>
+                    </div>
                 </div>
             </div>
 
@@ -92,7 +111,7 @@
                         <div id="quiz-timer" class="quiz-timer"></div>
                     </div>
                     <div id="quiz-questions-area"></div>
-                    <button onclick="submitQuiz()" id="btn-submit-quiz">Submit Answers >></button>
+                    <button id="btn-submit-quiz">Submit Answers >></button>
                 </div>
                 
                 <div id="quiz-result" class="componentContainer hidden">
@@ -106,7 +125,7 @@
                 <div class="componentContainer">
                     <h2>Leaderboard</h2>
                     <table id="lb-table">
-                        <thead><tr><!-- DYNAMIC --></tr></thead>
+                        <thead><tr></tr></thead>
                         <tbody id="lb-body"></tbody>
                     </table>
                 </div>
@@ -127,7 +146,7 @@
                         <div id="hist-score" style="font-size:2rem; font-weight:bold; color:var(--accent)"></div>
                     </div>
                     <div id="hist-checks"></div>
-                    <button class="btn-secondary" onclick="closeHistory()" style="margin-top:20px; width: auto;"><< Back</button>
+                    <button class="btn-secondary" id="btn-close-history" style="margin-top:20px; width: auto;"><< Back</button>
                 </div>
             </div>
 

@@ -1,23 +1,61 @@
 ﻿function getXmlValue(rootObj, pathArray) {
     let current = rootObj;
-    for (let key of pathArray) {
+    for (let i = 0; i < pathArray.length; i++) {
+        let key = pathArray[i];
         if (current === undefined || current === null) return null;
+
+        // If current is an array, try to navigate intelligently
         if (Array.isArray(current)) {
             const isIndex = typeof key === 'number' || (typeof key === 'string' && /^\d+$/.test(key));
-            if (isIndex) current = current[parseInt(key)];
-            else {
-                if (current.length === 1 && current[0] && current[0][key]) current = current[0][key];
-                else current = current[key]; 
+            if (isIndex) {
+                current = current[parseInt(key)];
+            } else {
+                // Auto-unwrap single-element arrays before accessing property
+                if (current.length === 1 && current[0] && typeof current[0] === 'object' && current[0][key] !== undefined) {
+                    current = current[0][key];
+                } else {
+                    // Try the key directly on the array (won't usually work, but fallback)
+                    current = current[key];
+                }
             }
-        } else {
+        } else if (typeof current === 'object') {
             current = current[key];
+        } else {
+            // current is a primitive but we still have path segments left
+            return null;
         }
     }
-    if (current && typeof current === 'object' && '_' in current) return current._;
-    if (Array.isArray(current) && current.length === 1 && (typeof current[0] === 'string' || typeof current[0] === 'number')) return current[0];
-    if (Array.isArray(current) && current.length === 1 && current[0] && current[0]._) return current[0]._;
-    return current;
+
+    // Final value extraction — unwrap xml2js structures
+    return unwrapValue(current);
 }
+
+/**
+ * Unwrap xml2js value representations:
+ * - { _: "text", $: { attr: "val" } } => "text"
+ * - ["single"] => "single"
+ * - [{ _: "text" }] => "text"
+ * - primitive => primitive
+ */
+function unwrapValue(val) {
+    if (val === undefined || val === null) return val;
+
+    // Unwrap single-element arrays recursively
+    if (Array.isArray(val)) {
+        if (val.length === 1) {
+            return unwrapValue(val[0]);
+        }
+        return val;
+    }
+
+    // Unwrap xml2js text node objects
+    if (typeof val === 'object' && '_' in val) {
+        return val._;
+    }
+
+    return val;
+}
+
 function parseCiscoConfig(lines) {
     if (!lines || lines.length === 0) return { global: [], blocks: {} };
     const config = { global: [], blocks: {} };
@@ -37,4 +75,5 @@ function parseCiscoConfig(lines) {
     });
     return config;
 }
+
 module.exports = { getXmlValue, parseCiscoConfig };

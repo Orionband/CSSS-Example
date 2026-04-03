@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../database');
 const { getConfig } = require('../config');
@@ -13,20 +13,51 @@ function generateUniqueId() {
     return id.match(/.{1,4}/g).join('-');
 }
 
-const registerLimiter = rateLimit({ windowMs: 24*60*60*1000, max: 2, standardHeaders: true, legacyHeaders: false });
+const DUMMY_HASH = bcrypt.hashSync('__dummy_timing_safe_value_never_matches__', 10);
+
+const registerLimiter = rateLimit({ windowMs: 24*60*60*1000, max: 10, standardHeaders: true, legacyHeaders: false });
 const loginLimiter = rateLimit({ windowMs: 5*60*1000, max: 5, standardHeaders: true, legacyHeaders: false });
+
+router.get('/csrf-token', (req, res) => {
+    if (!req.session) return res.status(500).json({ error: "Session unavailable" });
+    if (!req.session.csrfToken) {
+        const crypto = require('crypto');
+        req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    }
+    res.json({ csrfToken: req.session.csrfToken });
+});
 
 router.post('/register', registerLimiter, async (req, res) => {
     const { username, email, password } = req.body;
-    if (!username || !email || !password) return res.status(400).json({ error: "Missing fields" });
+    
+    if (!username || !email || password === undefined || password === null) {
+        return res.status(400).json({ error: "Missing fields" });
+    }
+    
+    // Explicitly cast to string and validate individual rules
+    const pwd = String(password);
+    
+    if (pwd.length < 8) {
+        return res.status(400).json({ error: "Password must be at least 8 characters." });
+    }
+    if (!/[A-Z]/.test(pwd)) {
+        return res.status(400).json({ error: "Password must contain at least one uppercase letter." });
+    }
+    if (!/[0-9]/.test(pwd)) {
+        return res.status(400).json({ error: "Password must contain at least one number." });
+    }
+
     try {
-        const hashedPassword = await bcrypt.hash(password, 10);
+        const hashedPassword = await bcrypt.hash(pwd, 10);
         const uid = generateUniqueId();
         const stmt = db.prepare('INSERT INTO users (username, email, password, unique_id) VALUES (?, ?, ?, ?)');
         const info = stmt.run(username, email, hashedPassword, uid);
         req.session.userId = info.lastInsertRowid;
         req.session.uniqueId = uid;
-        res.json({ success: true, unique_id: uid });
+        req.session.save((err) => {
+            if (err) return res.status(500).json({ error: "Session save failed." });
+            res.json({ success: true, unique_id: uid });
+        });
     } catch (err) {
         res.status(400).json({ error: "Username or Email already exists" });
     }
@@ -42,21 +73,28 @@ router.post('/logout', (req, res) => {
 router.post('/login', loginLimiter, async (req, res) => {
     const { username, password } = req.body;
     const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    const hashToCompare = user ? user.password : DUMMY_HASH;
+    
+    const pwd = password !== undefined && password !== null ? String(password) : "";
+    const passwordMatch = await bcrypt.compare(pwd, hashToCompare);
 
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    if (!user || !passwordMatch) {
         return res.status(401).json({ error: "Invalid credentials" });
     }
 
     req.session.regenerate(err => {
-        if (err) return res.status(500).json({ error: "Session regeneration failed" });
+        if (err) return res.status(500).json({ error: "Login failed. Please try again." });
         req.session.userId = user.id;
         req.session.uniqueId = user.unique_id;
-        res.json({ success: true, unique_id: user.unique_id });
+        req.session.save((saveErr) => {
+            if (saveErr) return res.status(500).json({ error: "Session save failed." });
+            res.json({ success: true, unique_id: user.unique_id });
+        });
     });
 });
 
 router.get('/me', (req, res) => {
-    if (!req.session.userId) return res.status(401).json({ error: "Not logged in" });
+    if (!req.session || !req.session.userId) return res.status(401).json({ error: "Not logged in" });
     res.json({ id: req.session.userId, unique_id: req.session.uniqueId });
 });
 
@@ -68,16 +106,176 @@ router.get('/config', (req, res) => {
         .filter(q => q.enabled !== false)
         .map(q => ({ id: q.id, title: q.title, type: 'quiz' }));
 
+    const fullTitle = process.env.APP_TITLE || 'CSSS ENGINE';
+    const parts = fullTitle.split(' ');
+    let titleMain = parts[0] || '';
+    let titleHighlight = parts.slice(1).join(' ') || '';
+
     res.json({ 
         challenges: [...safeLabs, ...safeQuizzes],
         options: { 
             show_leaderboard: process.env.SHOW_LEADERBOARD === 'true',
-            show_history: process.env.SHOW_HISTORY === 'true' // NEW FLAG
+            show_history: process.env.SHOW_HISTORY === 'true',
+            app_title: fullTitle,
+            app_title_main: titleMain,
+            app_title_highlight: titleHighlight
         }
     });
 });
 
+router.get('/lab/:id', (req, res) => {
+    if (!req.session || !req.session.userId) return res.status(401).json({ error: "Unauthorized" });
+    
+    const cfg = getConfig();
+    const lab = (cfg.labs || []).find(l => l.id === req.params.id);
+    if (!lab) return res.status(404).json({ error: "Lab not found." });
+
+    const totalAttempts = db.prepare('SELECT COUNT(*) as c FROM submissions WHERE user_id = ? AND lab_id = ?')
+        .get(req.session.userId, lab.id).c;
+    
+    const activeSession = db.prepare("SELECT id, timestamp FROM submissions WHERE user_id = ? AND lab_id = ? AND status = 'in_progress' AND type = 'lab' ORDER BY id DESC LIMIT 1")
+        .get(req.session.userId, lab.id);
+
+    let timeRemaining = null;
+    let sessionActive = false;
+
+    if (activeSession) {
+        sessionActive = true;
+        if (lab.time_limit_minutes && lab.time_limit_minutes > 0) {
+            const startTime = new Date(activeSession.timestamp.replace(' ', 'T') + 'Z').getTime();
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            timeRemaining = Math.max(0, (lab.time_limit_minutes * 60) - elapsed);
+            
+            if (timeRemaining <= 0) {
+                db.prepare("UPDATE submissions SET status = 'completed', score = 0, max_score = 0, details = ? WHERE id = ?")
+                    .run(JSON.stringify([{message: "Time expired.", device: "N/A", possible: 0, awarded: 0, passed: false}]), activeSession.id);
+                sessionActive = false;
+                timeRemaining = null;
+            }
+        }
+    }
+
+    res.json({
+        id: lab.id,
+        title: lab.title,
+        max_submissions: lab.max_submissions || 0,
+        attempts_taken: totalAttempts,
+        time_limit_minutes: lab.time_limit_minutes || 0,
+        has_pka_file: !!lab.pka_file,
+        session_active: sessionActive,
+        time_remaining_seconds: timeRemaining
+    });
+});
+
+router.post('/lab/:id/start', (req, res) => {
+    if (!req.session || !req.session.userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const cfg = getConfig();
+    const lab = (cfg.labs || []).find(l => l.id === req.params.id);
+    if (!lab) return res.status(404).json({ error: "Lab not found." });
+
+    const existing = db.prepare("SELECT id, timestamp FROM submissions WHERE user_id = ? AND lab_id = ? AND status = 'in_progress' AND type = 'lab' ORDER BY id DESC LIMIT 1")
+        .get(req.session.userId, lab.id);
+
+    if (existing) {
+        let timeRemaining = null;
+        if (lab.time_limit_minutes && lab.time_limit_minutes > 0) {
+            const startTime = new Date(existing.timestamp.replace(' ', 'T') + 'Z').getTime();
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            timeRemaining = Math.max(0, (lab.time_limit_minutes * 60) - elapsed);
+
+            if (timeRemaining <= 0) {
+                db.prepare("UPDATE submissions SET status = 'completed', score = 0, max_score = 0, details = ? WHERE id = ?")
+                    .run(JSON.stringify([{message: "Time expired.", device: "N/A", possible: 0, awarded: 0, passed: false}]), existing.id);
+                return res.status(403).json({ error: "Your previous session has expired." });
+            }
+        }
+
+        return res.json({
+            success: true,
+            resumed: true,
+            has_pka_file: !!lab.pka_file,
+            time_remaining_seconds: timeRemaining
+        });
+    }
+
+    if (lab.max_submissions && lab.max_submissions > 0) {
+        const count = db.prepare('SELECT COUNT(*) as c FROM submissions WHERE user_id = ? AND lab_id = ?')
+            .get(req.session.userId, lab.id).c;
+        if (count >= lab.max_submissions) {
+            return res.status(403).json({ error: "Maximum attempts reached." });
+        }
+    }
+
+    db.prepare("INSERT INTO submissions (user_id, unique_id, lab_id, status, type) VALUES (?, ?, ?, 'in_progress', 'lab')")
+        .run(req.session.userId, req.session.uniqueId, lab.id);
+
+    let timeRemaining = null;
+    if (lab.time_limit_minutes && lab.time_limit_minutes > 0) {
+        timeRemaining = lab.time_limit_minutes * 60;
+    }
+
+    res.json({
+        success: true,
+        resumed: false,
+        has_pka_file: !!lab.pka_file,
+        time_remaining_seconds: timeRemaining
+    });
+});
+
+router.get('/lab/:id/download', (req, res) => {
+    if (!req.session || !req.session.userId) return res.status(401).send("Unauthorized");
+
+    const cfg = getConfig();
+    const lab = (cfg.labs || []).find(l => l.id === req.params.id);
+    if (!lab) return res.status(404).send("Lab not found.");
+    if (!lab.pka_file) return res.status(404).send("No PKA file configured for this lab.");
+
+    const activeSession = db.prepare("SELECT id, timestamp FROM submissions WHERE user_id = ? AND lab_id = ? AND status = 'in_progress' AND type = 'lab' ORDER BY id DESC LIMIT 1")
+        .get(req.session.userId, lab.id);
+
+    if (!activeSession) {
+        return res.status(403).send("Forbidden: No active lab session. Start the lab first.");
+    }
+
+    if (lab.time_limit_minutes && lab.time_limit_minutes > 0) {
+        const startTime = new Date(activeSession.timestamp.replace(' ', 'T') + 'Z').getTime();
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        if (elapsed > (lab.time_limit_minutes * 60)) {
+            db.prepare("UPDATE submissions SET status = 'completed', score = 0, max_score = 0, details = ? WHERE id = ?")
+                .run(JSON.stringify([{message: "Time expired.", device: "N/A", possible: 0, awarded: 0, passed: false}]), activeSession.id);
+            return res.status(403).send("Forbidden: Lab session has expired.");
+        }
+    }
+
+    const path = require('path');
+    const fs = require('fs');
+
+    const safeFilename = path.basename(lab.pka_file);
+    if (/[/\\:\0]/.test(safeFilename) || safeFilename.startsWith('.')) {
+        return res.status(400).send("Invalid file configuration.");
+    }
+
+    const baseDir = path.resolve(path.join(__dirname, '../../protected/pka'));
+    const filePath = path.resolve(path.join(baseDir, safeFilename));
+
+    if (!filePath.startsWith(baseDir + path.sep) && filePath !== baseDir) {
+        return res.status(403).send("Forbidden.");
+    }
+
+    try {
+        const stats = fs.lstatSync(filePath);
+        if (stats.isSymbolicLink()) return res.status(403).send("Forbidden.");
+        if (!stats.isFile()) return res.status(404).send("File not found.");
+    } catch (e) {
+        return res.status(404).send("File not found.");
+    }
+
+    res.download(filePath, safeFilename);
+});
+
 router.get('/leaderboard', (req, res) => {
+    if (!req.session || !req.session.userId) return res.status(401).json({ error: "Unauthorized" });
     if (process.env.SHOW_LEADERBOARD !== 'true') {
         return res.status(403).json({ error: "Leaderboard disabled" });
     }
@@ -126,9 +324,7 @@ router.get('/leaderboard', (req, res) => {
 });
 
 router.get('/history', (req, res) => {
-    if (!req.session.userId) return res.status(401).json({ error: "Not logged in" });
-
-
+    if (!req.session || !req.session.userId) return res.status(401).json({ error: "Not logged in" });
     if (process.env.SHOW_HISTORY !== 'true') return res.status(403).json({ error: "History disabled" });
     
     const cfg = getConfig();
