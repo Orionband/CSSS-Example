@@ -144,7 +144,7 @@ button:active { transform: translateY(1px); outline: none; }
 .quiz-options input[type="checkbox"] { border-radius: 3px; }
 .quiz-options input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
 .quiz-options input[type="checkbox"]:checked::after {
-    content: '✓';
+    content: '✔';
     position: absolute;
     top: -2px; left: 2px;
     color: #101010;
@@ -199,6 +199,7 @@ button:active { transform: translateY(1px); outline: none; }
 .quiz-feedback { margin-top: 10px; padding: 10px; border-radius: 4px; font-size: 0.9rem; }
 .quiz-feedback.correct { background: rgba(76,175,80,0.1); border-left: 3px solid #4CAF50; color: #81c784; }
 .quiz-feedback.incorrect { background: rgba(240,93,94,0.1); border-left: 3px solid var(--accent); color: #e57373; }
+.quiz-feedback.missed { background: rgba(77,166,255,0.1); border-left: 3px solid #4da6ff; color: #4da6ff; }
 
 /* --- DOWNLOAD LINK (Labs & Quiz PKA) --- */
 .lab-download-link {
@@ -235,6 +236,7 @@ button:active { transform: translateY(1px); outline: none; }
 .check-item:last-child { border-bottom: none; }
 .gain { border-left: 4px solid #4CAF50; background: rgba(76,175,80,0.05); }
 .penalty { border-left: 4px solid var(--accent); background: rgba(240,93,94,0.05); }
+.missed { border-left: 4px solid #4da6ff; background: rgba(77,166,255,0.05); }
 .pts { font-weight: bold; font-family: 'Roboto Mono'; font-size: 1.1rem; }
 .history-row { display: flex; justify-content: space-between; padding: 15px; border-bottom: 1px solid #333; cursor: pointer; transition: background 0.1s; align-items: center; }
 .history-row:hover { background: #333; }

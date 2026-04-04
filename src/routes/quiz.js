@@ -23,6 +23,21 @@ function parseDbTime(dbTimestamp) {
     return new Date(dbTimestamp.replace(' ', 'T') + 'Z').getTime();
 }
 
+function isWindowOpen(challenge) {
+    if (!challenge) return true;
+    if (!challenge.comp_start && !challenge.comp_end) return true;
+    const now = Date.now();
+    if (challenge.comp_start) {
+        const start = new Date(challenge.comp_start).getTime();
+        if (!isNaN(start) && now < start) return false;
+    }
+    if (challenge.comp_end) {
+        const end = new Date(challenge.comp_end).getTime();
+        if (!isNaN(end) && now > end) return false;
+    }
+    return true;
+}
+
 setInterval(() => {
     try {
         const inProgress = db.prepare("SELECT * FROM submissions WHERE status = 'in_progress' AND type = 'quiz'").all();
@@ -31,13 +46,27 @@ setInterval(() => {
 
         inProgress.forEach(sub => {
             const qCfg = quizzes.find(q => q.id === sub.lab_id);
-            if (qCfg && qCfg.time_limit_minutes > 0) {
-                const startTime = parseDbTime(sub.timestamp);
-                const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-                
-                if (elapsedSeconds > (qCfg.time_limit_minutes * 60) + 2) {
+            if (qCfg) {
+                let closeSession = false;
+                let reason = "";
+
+                if (qCfg.time_limit_minutes > 0) {
+                    const startTime = parseDbTime(sub.timestamp);
+                    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+                    if (elapsedSeconds > (qCfg.time_limit_minutes * 60) + 2) {
+                        closeSession = true;
+                        reason = "Auto-closed: Time limit expired.";
+                    }
+                }
+
+                if (!isWindowOpen(qCfg)) {
+                    closeSession = true;
+                    reason = "Auto-closed: Competition window ended.";
+                }
+
+                if (closeSession) {
                     db.prepare("UPDATE submissions SET status = 'completed', score = 0, details = ? WHERE id = ?")
-                      .run(JSON.stringify([{message: "Auto-closed: Time limit expired.", correct: false}]), sub.id);
+                      .run(JSON.stringify([{message: reason, correct: false}]), sub.id);
                 }
             }
         });
@@ -137,6 +166,10 @@ router.post('/:id/start', (req, res) => {
     const quiz = (cfg.quizzes || []).find(q => q.id === req.params.id);
     if (!quiz || quiz.enabled === false) return res.status(404).json({ error: "Quiz not found." });
 
+    if (!isWindowOpen(quiz)) {
+        return res.status(403).json({ error: "Quiz is currently closed outside of the competition window." });
+    }
+
     const existingInProgress = db.prepare("SELECT * FROM submissions WHERE user_id = ? AND lab_id = ? AND status = 'in_progress' ORDER BY id DESC LIMIT 1").get(req.session.userId, quiz.id);
 
     let timeRemaining = quiz.time_limit_minutes * 60;
@@ -154,6 +187,16 @@ router.post('/:id/start', (req, res) => {
             }
         }
     } else {
+        const rateLimitCount = quiz.rate_limit_count || 0;
+        const rateLimitWindow = quiz.rate_limit_window_seconds || 60;
+        
+        if (rateLimitCount > 0) {
+            const recent = db.prepare("SELECT COUNT(*) as c FROM submissions WHERE user_id = ? AND lab_id = ? AND timestamp > datetime('now', '-' || ? || ' seconds')").get(req.session.userId, quiz.id, rateLimitWindow).c;
+            if (recent >= rateLimitCount) {
+                return res.status(429).json({ error: "Rate limit exceeded. Please wait before starting another attempt." });
+            }
+        }
+
         if (quiz.max_attempts > 0) {
             const attempts = db.prepare('SELECT COUNT(*) as c FROM submissions WHERE user_id = ? AND lab_id = ?').get(req.session.userId, quiz.id).c;
             if (attempts >= quiz.max_attempts) return res.status(403).json({ error: "Maximum attempts reached." });
@@ -195,6 +238,10 @@ router.post('/:id/submit', (req, res) => {
     }
 
     try {
+        if (!isWindowOpen(quiz)) {
+            return res.status(403).json({ error: "Submissions are currently closed outside of the competition window." });
+        }
+
         const existingInProgress = db.prepare("SELECT * FROM submissions WHERE user_id = ? AND lab_id = ? AND status = 'in_progress' ORDER BY id DESC LIMIT 1").get(req.session.userId, quiz.id);
 
         if (!existingInProgress) {
@@ -227,6 +274,7 @@ router.post('/:id/submit', (req, res) => {
         let score = 0;
         let maxScore = 0;
         const breakdown = [];
+        const showMissed = quiz.show_missed_points === true;
 
         quiz.questions.forEach((q, idx) => {
             const input = userAnswers[String(idx)];
@@ -281,14 +329,16 @@ router.post('/:id/submit', (req, res) => {
                 score += pts;
             }
 
-            breakdown.push({
-                questionIdx: idx,
-                message: `Question ${idx + 1}`,
-                possible: pts,
-                awarded: isCorrect ? pts : 0,
-                correct: isCorrect,
-                explanation: q.explanation || (isCorrect ? "Correct" : "Incorrect")
-            });
+            if (isCorrect || showMissed) {
+                breakdown.push({
+                    questionIdx: idx,
+                    message: `Question ${idx + 1}`,
+                    possible: pts,
+                    awarded: isCorrect ? pts : 0,
+                    correct: isCorrect,
+                    explanation: q.explanation || (isCorrect ? "Correct" : "Incorrect")
+                });
+            }
         });
 
         db.prepare("UPDATE submissions SET score = ?, max_score = ?, details = ?, status = 'completed' WHERE id = ?")

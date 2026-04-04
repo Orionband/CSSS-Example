@@ -3,6 +3,7 @@ const readline = require('readline');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 
 const dbPath = path.join(__dirname, 'grader.db');
 
@@ -134,7 +135,7 @@ async function deleteUser() {
   console.log('\nChoose action:');
   console.log('1) DELETE dependent rows in referencing tables, then DELETE user (recommended)');
   console.log('2) SET FK columns to NULL in referencing tables (only if those FK columns allow NULL), then DELETE user');
-  console.log('3) FORCE DELETE user by temporarily disabling foreign keys (not recommended — leaves orphans)');
+  console.log('3) FORCE DELETE user by temporarily disabling foreign keys (not recommended a_" leaves orphans)');
   console.log('4) Abort');
 
   const choice = await ask('Choose 1/2/3/4: ');
@@ -160,7 +161,7 @@ async function deleteUser() {
         const colInfo = cols.find(c => c.name === r.from);
         if (!colInfo) throw new Error(`Column ${r.from} not found on ${r.table}`);
         if (colInfo.notnull === 1) {
-          throw new Error(`Column ${r.table}.${r.from} is NOT NULL — cannot set to NULL automatically. Canceling.`);
+          throw new Error(`Column ${r.table}.${r.from} is NOT NULL a_" cannot set to NULL automatically. Canceling.`);
         }
       }
       for (const r of refs) {
@@ -219,12 +220,6 @@ async function resetPassword() {
   console.log(`Password updated. Rows affected: ${info.changes}`);
 }
 
-/**
- * Wipe submissions only for a selected user.
- * - asks for id or username
- * - shows count and sample rows
- * - requires typing WIPE to confirm
- */
 async function wipeSubmissions() {
   const key = await ask('Enter user id or username whose submissions you want to wipe: ');
   const user = findUserByIdOrUsername(key);
@@ -293,26 +288,81 @@ async function runPlainSql() {
   }
 }
 
+async function createUser() {
+    const username = await ask('Enter new username: ');
+    if (!username) return console.log("Aborted: Username required.");
+    
+    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+    if (existing) return console.log("Aborted: Username already exists.");
+
+    const email = await ask('Enter new email: ');
+    if (!email) return console.log("Aborted: Email required.");
+
+    let pw = await ask('Enter password (leave empty to auto-generate): ');
+    if (!pw) {
+        pw = genRandomPassword();
+        console.log('Generated password:', pw);
+    }
+
+    const uid = crypto.randomBytes(6).toString('hex');
+    const hash = bcrypt.hashSync(pw, 10);
+
+    backupDb();
+    try {
+        const info = db.prepare('INSERT INTO users (username, email, password, unique_id) VALUES (?, ?, ?, ?)').run(username, email, hash, uid);
+        console.log(`User created successfully. ID: ${info.lastInsertRowid}, Unique_ID: ${uid}`);
+    } catch (err) {
+        console.error('Error creating user:', err.message);
+    }
+}
+
+async function deleteSpecificSubmission() {
+    const subId = await ask('Enter Submission ID to delete: ');
+    if (!subId || isNaN(subId)) return console.log("Aborted: Invalid ID.");
+
+    const sub = db.prepare('SELECT * FROM submissions WHERE id = ?').get(Number(subId));
+    if (!sub) return console.log("Submission not found.");
+
+    console.log("Submission found:");
+    prettyPrintRows([sub]);
+
+    const confirm = await ask(`Type DELETE to permanently remove submission #${subId}: `);
+    if (confirm !== 'DELETE') return console.log("Aborted.");
+
+    backupDb();
+    try {
+        const info = db.prepare('DELETE FROM submissions WHERE id = ?').run(sub.id);
+        console.log(`Deleted ${info.changes} submission(s).`);
+    } catch (err) {
+        console.error('Error deleting submission:', err.message);
+    }
+}
+
 async function mainMenu() {
   while (true) {
+    console.log('\n=== Grader DB Tool ===');
     console.log('1) View users');
     console.log('2) View submissions');
-    console.log('3) Delete user (by id or username)');
-    console.log('4) Reset user password (bcrypt 10 rounds)');
-    console.log('5) Wipe submissions for a user (DELETE user submissions only)');
-    console.log('6) Run plain SQL');
-    console.log('7) List tables');
-    console.log('8) Exit');
+    console.log('3) Create new user');
+    console.log('4) Delete user (by id or username)');
+    console.log('5) Reset user password (bcrypt 10 rounds)');
+    console.log('6) Wipe ALL submissions for a specific user');
+    console.log('7) Delete specific submission by ID');
+    console.log('8) Run plain SQL');
+    console.log('9) List tables');
+    console.log('0) Exit');
 
-    const choice = await ask('Choose: ');
+    const choice = await ask('Choose (0-9): ');
     if (choice === '1') await viewUsers();
     else if (choice === '2') await viewSubmissions();
-    else if (choice === '3') await deleteUser();
-    else if (choice === '4') await resetPassword();
-    else if (choice === '5') await wipeSubmissions();
-    else if (choice === '6') await runPlainSql();
-    else if (choice === '7') console.log('Tables:', listTables().join(', '));
-    else if (choice === '8') break;
+    else if (choice === '3') await createUser();
+    else if (choice === '4') await deleteUser();
+    else if (choice === '5') await resetPassword();
+    else if (choice === '6') await wipeSubmissions();
+    else if (choice === '7') await deleteSpecificSubmission();
+    else if (choice === '8') await runPlainSql();
+    else if (choice === '9') console.log('Tables:', listTables().join(', '));
+    else if (choice === '0') break;
     else console.log('Invalid option.');
   }
   rl.close();

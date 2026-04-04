@@ -18,6 +18,21 @@ const DUMMY_HASH = bcrypt.hashSync('__dummy_timing_safe_value_never_matches__', 
 const registerLimiter = rateLimit({ windowMs: 24*60*60*1000, max: 10, standardHeaders: true, legacyHeaders: false });
 const loginLimiter = rateLimit({ windowMs: 5*60*1000, max: 5, standardHeaders: true, legacyHeaders: false });
 
+function isWindowOpen(challenge) {
+    if (!challenge) return true;
+    if (!challenge.comp_start && !challenge.comp_end) return true;
+    const now = Date.now();
+    if (challenge.comp_start) {
+        const start = new Date(challenge.comp_start).getTime();
+        if (!isNaN(start) && now < start) return false;
+    }
+    if (challenge.comp_end) {
+        const end = new Date(challenge.comp_end).getTime();
+        if (!isNaN(end) && now > end) return false;
+    }
+    return true;
+}
+
 router.get('/csrf-token', (req, res) => {
     if (!req.session) return res.status(500).json({ error: "Session unavailable" });
     if (!req.session.csrfToken) {
@@ -28,14 +43,23 @@ router.get('/csrf-token', (req, res) => {
 });
 
 router.post('/register', registerLimiter, async (req, res) => {
+    if (process.env.ALLOW_REGISTRATION === 'false') {
+        return res.status(403).json({ error: "Registration is currently disabled by the administrator." });
+    }
+
     const { username, email, password } = req.body;
     
     if (!username || !email || password === undefined || password === null) {
         return res.status(400).json({ error: "Missing fields" });
     }
     
-    // Explicitly cast to string and validate individual rules
     const pwd = String(password);
+    const userStr = String(username);
+    const emailStr = String(email);
+
+    if (userStr.length > 100 || emailStr.length > 100 || pwd.length > 100) {
+        return res.status(400).json({ error: "Fields must be 100 characters or less." });
+    }
     
     if (pwd.length < 8) {
         return res.status(400).json({ error: "Password must be at least 8 characters." });
@@ -51,7 +75,7 @@ router.post('/register', registerLimiter, async (req, res) => {
         const hashedPassword = await bcrypt.hash(pwd, 10);
         const uid = generateUniqueId();
         const stmt = db.prepare('INSERT INTO users (username, email, password, unique_id) VALUES (?, ?, ?, ?)');
-        const info = stmt.run(username, email, hashedPassword, uid);
+        const info = stmt.run(userStr, emailStr, hashedPassword, uid);
         req.session.userId = info.lastInsertRowid;
         req.session.uniqueId = uid;
         req.session.save((err) => {
@@ -102,9 +126,7 @@ router.get('/config', (req, res) => {
     const cfg = getConfig();
     const safeLabs = (cfg.labs || []).map(l => ({ id: l.id, title: l.title, type: 'lab' }));
     
-    const safeQuizzes = (cfg.quizzes || [])
-        .filter(q => q.enabled !== false)
-        .map(q => ({ id: q.id, title: q.title, type: 'quiz' }));
+    const safeQuizzes = (cfg.quizzes || []).map(q => ({ id: q.id, title: q.title, type: 'quiz' }));
 
     const fullTitle = process.env.APP_TITLE || 'CSSS ENGINE';
     const parts = fullTitle.split(' ');
@@ -173,6 +195,10 @@ router.post('/lab/:id/start', (req, res) => {
     const cfg = getConfig();
     const lab = (cfg.labs || []).find(l => l.id === req.params.id);
     if (!lab) return res.status(404).json({ error: "Lab not found." });
+
+    if (!isWindowOpen(lab)) {
+        return res.status(403).json({ error: "Lab is currently closed outside of the competition window." });
+    }
 
     const existing = db.prepare("SELECT id, timestamp FROM submissions WHERE user_id = ? AND lab_id = ? AND status = 'in_progress' AND type = 'lab' ORDER BY id DESC LIMIT 1")
         .get(req.session.userId, lab.id);
@@ -353,10 +379,7 @@ router.get('/history', (req, res) => {
             if (type === 'quiz') {
                 clientDetails = details; 
             } else {
-                clientDetails = details.filter(item => {
-                    const isPenalty = item.possible < 0;
-                    return isPenalty ? item.awarded < 0 : item.awarded > 0;
-                }).map(item => ({ message: item.message, points: item.awarded }));
+                clientDetails = details.map(item => ({ message: item.message, points: item.awarded, passed: item.passed }));
             }
         }
         

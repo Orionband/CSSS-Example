@@ -3,7 +3,7 @@ const toml = require('toml');
 const path = require('path');
 
 let config = { options: {}, labs: [], quizzes: [] };
-let rawConfig = ""; // Lab raw config (for worker)
+let rawConfig = ""; 
 
 function reloadConfig() {
     try {
@@ -32,6 +32,28 @@ function reloadConfig() {
         console.error(`   Details: ${e.message}`);
     }
 }
+
+function isWindowOpen(challenge) {
+    if (!challenge) return true;
+    
+    // If no competition window dates are set, it is always open.
+    if (!challenge.comp_start && !challenge.comp_end) return true;
+    
+    const now = Date.now();
+    
+    if (challenge.comp_start) {
+        const startTime = new Date(challenge.comp_start).getTime();
+        if (!isNaN(startTime) && now < startTime) return false;
+    }
+    
+    if (challenge.comp_end) {
+        const endTime = new Date(challenge.comp_end).getTime();
+        if (!isNaN(endTime) && now > endTime) return false;
+    }
+    
+    return true;
+}
+
 reloadConfig();
 
 module.exports = { getConfig: () => config, getRawConfig: () => rawConfig };

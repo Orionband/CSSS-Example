@@ -28,6 +28,7 @@ const askBool = async (query) => {
     const retainXml = await askBool('Retain decompressed .xml grading files on the server?');
     const showLeaderboard = await askBool('Enable global leaderboard?');
     const showHistory = await askBool('Enable History tab for students?');
+    const allowRegistration = await askBool('Allow new user registrations?');
 
     const replaceOrAdd = (key, value) => {
         const regex = new RegExp(`^${key}=.*`, 'm');
@@ -45,6 +46,7 @@ const askBool = async (query) => {
     replaceOrAdd('RETAIN_XML', retainXml);
     replaceOrAdd('SHOW_LEADERBOARD', showLeaderboard);
     replaceOrAdd('SHOW_HISTORY', showHistory);
+    replaceOrAdd('ALLOW_REGISTRATION', allowRegistration);
 
     envContent = envContent.replace(/^MAX_UPLOAD_MB=.*\n?/gm, '');
     envContent = envContent.replace(/^MAX_XML_OUTPUT_MB=.*\n?/gm, '');
@@ -53,13 +55,14 @@ const askBool = async (query) => {
     fs.writeFileSync(envFile, envContent, 'utf-8');
 
     console.log('\n--- Configuration Saved to .env ---');
-    console.log('SESSION_SECRET:   [Generated]');
-    console.log('NODE_ENV:         production');
-    console.log(`APP_TITLE:        ${appTitle.trim() || 'CSSS ENGINE'}`);
-    console.log(`RETAIN_PKA:       ${retainPka}`);
-    console.log(`RETAIN_XML:       ${retainXml}`);
-    console.log(`SHOW_LEADERBOARD: ${showLeaderboard}`);
-    console.log(`SHOW_HISTORY:     ${showHistory}`);
+    console.log('SESSION_SECRET:     [Generated]');
+    console.log('NODE_ENV:           production');
+    console.log(`APP_TITLE:          ${appTitle.trim() || 'CSSS ENGINE'}`);
+    console.log(`RETAIN_PKA:         ${retainPka}`);
+    console.log(`RETAIN_XML:         ${retainXml}`);
+    console.log(`SHOW_LEADERBOARD:   ${showLeaderboard}`);
+    console.log(`SHOW_HISTORY:       ${showHistory}`);
+    console.log(`ALLOW_REGISTRATION: ${allowRegistration}`);
     
     readline.close();
 })();

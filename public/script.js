@@ -587,8 +587,8 @@ async function submitQuiz() {
     if (result.breakdown) {
         result.breakdown.forEach(item => {
             const div = document.createElement('div');
-            div.className = `quiz-feedback ${item.correct ? 'correct' : 'incorrect'}`;
-            div.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Incorrect'}<br><small>Explanation: ${escapeHtml(item.explanation)}</small>`;
+            div.className = `quiz-feedback ${item.correct ? 'correct' : 'missed'}`;
+            div.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Missed'}<br><small>Explanation: ${escapeHtml(item.explanation)}</small>`;
             feedList.appendChild(div);
         });
     } else {
@@ -669,20 +669,53 @@ function showHistoryDetail(sub) {
     document.getElementById('hist-score').innerText = (sub.score !== null) ? `${sub.score} / ${sub.max_score}` : "Hidden";
     const cont = document.getElementById('hist-checks');
     cont.innerHTML = '';
+    
     if (sub.details === null) {
         cont.innerHTML = "<div style='text-align:center; color:#888'>Details hidden.</div>";
     } else {
-        sub.details.forEach(item => {
-            const row = document.createElement('div');
-            if (sub.type === 'quiz') {
-                row.className = `quiz-feedback ${item.correct ? 'correct' : 'incorrect'}`;
-                row.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Incorrect'}`;
-            } else {
-                row.className = 'check-item ' + (item.points >= 0 ? 'gain' : 'penalty');
-                row.innerHTML = `<span>${escapeHtml(item.message)}</span><span class="pts">${item.points > 0 ? '+'+item.points : item.points}</span>`;
+        if (sub.type === 'quiz') {
+            sub.details.forEach(item => {
+                const row = document.createElement('div');
+                row.className = `quiz-feedback ${item.correct ? 'correct' : 'missed'}`;
+                row.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Missed'}`;
+                cont.appendChild(row);
+            });
+        } else {
+            const awarded = sub.details.filter(c => c.passed !== false);
+            const missed = sub.details.filter(c => c.passed === false);
+            
+            if (awarded.length > 0) {
+                const h = document.createElement('h4');
+                h.style.color = "#ccc";
+                h.style.marginTop = "10px";
+                h.style.marginBottom = "5px";
+                h.innerText = "Awarded / Penalized";
+                cont.appendChild(h);
+                
+                awarded.forEach(c => {
+                    const row = document.createElement('div');
+                    row.className = 'check-item ' + (c.points >= 0 ? 'gain' : 'penalty');
+                    row.innerHTML = `<span>${escapeHtml(c.message)}</span><span class="pts">${c.points > 0 ? '+'+c.points : c.points}</span>`;
+                    cont.appendChild(row);
+                });
             }
-            cont.appendChild(row);
-        });
+            
+            if (missed.length > 0) {
+                const h = document.createElement('h4');
+                h.style.color = "#4da6ff";
+                h.style.marginTop = "15px";
+                h.style.marginBottom = "5px";
+                h.innerText = "Missed Checks";
+                cont.appendChild(h);
+                
+                missed.forEach(c => {
+                    const row = document.createElement('div');
+                    row.className = 'check-item missed';
+                    row.innerHTML = `<span>${escapeHtml(c.message)}</span><span class="pts" style="color: #4da6ff">${c.points}</span>`;
+                    cont.appendChild(row);
+                });
+            }
+        }
     }
 }
 
@@ -709,7 +742,11 @@ fileInput.addEventListener('change', (e) => {
     fileInput.value = ''; 
     const reader = new FileReader();
     reader.onload = (evt) => {
-        socket.emit('upload_file', { fileData: evt.target.result, labId: currentChallengeId });
+        socket.emit('upload_file', { 
+            fileData: evt.target.result, 
+            labId: currentChallengeId,
+            _csrf: csrfToken
+        });
         statusText.innerText = "Queued...";
     };
     reader.readAsArrayBuffer(file);
@@ -728,17 +765,47 @@ socket.on('result', (data) => {
     const scoreBox = document.getElementById('final-score');
     checksList.innerHTML = '';
     document.getElementById('report').classList.remove('hidden');
+    
     if (data.show_score) scoreBox.innerText = `${data.total} / ${data.max}`;
     else scoreBox.innerText = "Hidden";
+    
     if (data.clientBreakdown === null) {
         checksList.innerHTML = "<div style='text-align:center; color:#888'>Feedback hidden.</div>";
     } else {
-        data.clientBreakdown.forEach(c => {
-            const row = document.createElement('div');
-            row.className = 'check-item ' + (c.points >= 0 ? 'gain' : 'penalty');
-            row.innerHTML = `<span>${escapeHtml(c.message)}</span><span class="pts">${c.points > 0 ? '+'+c.points : c.points}</span>`;
-            checksList.appendChild(row);
-        });
+        const awarded = data.clientBreakdown.filter(c => c.passed !== false);
+        const missed = data.clientBreakdown.filter(c => c.passed === false);
+        
+        if (awarded.length > 0) {
+            const h = document.createElement('h4');
+            h.style.color = "#ccc";
+            h.style.marginTop = "10px";
+            h.style.marginBottom = "5px";
+            h.innerText = "Awarded / Penalized";
+            checksList.appendChild(h);
+            
+            awarded.forEach(c => {
+                const row = document.createElement('div');
+                row.className = 'check-item ' + (c.points >= 0 ? 'gain' : 'penalty');
+                row.innerHTML = `<span>${escapeHtml(c.message)}</span><span class="pts">${c.points > 0 ? '+'+c.points : c.points}</span>`;
+                checksList.appendChild(row);
+            });
+        }
+        
+        if (missed.length > 0) {
+            const h = document.createElement('h4');
+            h.style.color = "#4da6ff";
+            h.style.marginTop = "15px";
+            h.style.marginBottom = "5px";
+            h.innerText = "Missed Checks";
+            checksList.appendChild(h);
+            
+            missed.forEach(c => {
+                const row = document.createElement('div');
+                row.className = 'check-item missed';
+                row.innerHTML = `<span>${escapeHtml(c.message)}</span><span class="pts" style="color: #4da6ff">${c.points}</span>`;
+                checksList.appendChild(row);
+            });
+        }
     }
 });
 

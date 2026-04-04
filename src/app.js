@@ -49,7 +49,6 @@ const sessionMiddleware = session({
 app.use(sessionMiddleware);
 io.engine.use(sessionMiddleware);
 
-// Security headers
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
@@ -67,7 +66,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// CSRF token generation
 app.use((req, res, next) => {
     if (req.session && !req.session.csrfToken) {
         req.session.csrfToken = crypto.randomBytes(32).toString('hex');
@@ -75,16 +73,12 @@ app.use((req, res, next) => {
     next();
 });
 
-// CSRF validation for state-changing requests
 app.use((req, res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
-    
     const clientToken = req.headers['x-csrf-token'] || (req.body && req.body._csrf);
-    
     if (!req.session || !req.session.csrfToken || clientToken !== req.session.csrfToken) {
         return res.status(403).json({ error: "Invalid or missing CSRF token." });
     }
-    
     next();
 });
 
@@ -93,6 +87,21 @@ app.use('/api', authRoutes);
 app.use('/api/quiz', quizRoutes);
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../index.html')));
+
+function isWindowOpen(challenge) {
+    if (!challenge) return true;
+    if (!challenge.comp_start && !challenge.comp_end) return true;
+    const now = Date.now();
+    if (challenge.comp_start) {
+        const start = new Date(challenge.comp_start).getTime();
+        if (!isNaN(start) && now < start) return false;
+    }
+    if (challenge.comp_end) {
+        const end = new Date(challenge.comp_end).getTime();
+        if (!isNaN(end) && now > end) return false;
+    }
+    return true;
+}
 
 const MAX_WORKERS = parseInt(process.env.MAX_WORKERS) || 4;
 let activeWorkers = 0;
@@ -172,7 +181,6 @@ function processWorkerQueue() {
     });
 }
 
-// Sweepers
 setInterval(() => {
     try {
         db.prepare("DELETE FROM active_locks WHERE timestamp < datetime('now', '-5 minutes')").run();
@@ -183,13 +191,27 @@ setInterval(() => {
 
         inProgress.forEach(sub => {
             const labCfg = labs.find(l => l.id === sub.lab_id);
-            if (labCfg && labCfg.time_limit_minutes && labCfg.time_limit_minutes > 0) {
-                const startTime = new Date(sub.timestamp.replace(' ', 'T') + 'Z').getTime();
-                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            if (labCfg) {
+                let closeSession = false;
+                let reason = "";
 
-                if (elapsed > (labCfg.time_limit_minutes * 60) + 2) {
+                if (labCfg.time_limit_minutes && labCfg.time_limit_minutes > 0) {
+                    const startTime = new Date(sub.timestamp.replace(' ', 'T') + 'Z').getTime();
+                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                    if (elapsed > (labCfg.time_limit_minutes * 60) + 2) {
+                        closeSession = true;
+                        reason = "Auto-closed: Time limit expired.";
+                    }
+                }
+
+                if (!isWindowOpen(labCfg)) {
+                    closeSession = true;
+                    reason = "Auto-closed: Competition window ended.";
+                }
+
+                if (closeSession) {
                     db.prepare("UPDATE submissions SET status = 'completed', score = 0, max_score = 0, details = ? WHERE id = ?")
-                        .run(JSON.stringify([{message: "Auto-closed: Time limit expired.", device: "N/A", possible: 0, awarded: 0, passed: false}]), sub.id);
+                        .run(JSON.stringify([{message: reason, device: "N/A", possible: 0, awarded: 0, passed: false}]), sub.id);
                 }
             }
         });
@@ -231,6 +253,11 @@ io.on('connection', (socket) => {
             socketUser = null;
             return socket.emit('err', "Session expired. Please refresh and log in again.");
         }
+        
+        const clientToken = packet._csrf;
+        if (!clientToken || clientToken !== sess.csrfToken) {
+            return socket.emit('err', "Invalid CSRF token. Please refresh the page.");
+        }
 
         const fileData = packet.fileData || packet;
         const cfg = getConfig();
@@ -242,6 +269,10 @@ io.on('connection', (socket) => {
 
         const targetLab = labs.find(l => l.id === labId);
         if (!targetLab) return socket.emit('err', "Invalid Lab ID.");
+
+        if (!isWindowOpen(targetLab)) {
+            return socket.emit('err', "Submissions are currently closed outside of the competition window.");
+        }
 
         const labMaxMb = targetLab.max_upload_mb || 75;
         if (Buffer.byteLength(fileData) > labMaxMb * 1024 * 1024) {

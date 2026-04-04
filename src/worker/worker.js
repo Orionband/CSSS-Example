@@ -54,7 +54,6 @@ const { evaluateCondition } = require('./grading');
 
             report("Decompressing", 65);
             
-            // FIX #11: Default lowered from 1125 to 20 MB
             const limitMb = maxXmlMb || 20; 
             const MAX_XML_OUTPUT = 1024 * 1024 * limitMb; 
             const zlibOptions = { maxOutputLength: MAX_XML_OUTPUT };
@@ -77,20 +76,13 @@ const { evaluateCondition } = require('./grading');
         const labConfig = (fullConfig.labs || []).find(l => l.id === labId);
         if (!labConfig) throw new Error("Lab configuration not found.");
 
-        // FIX #4: Complete XXE prevention - strip ALL DTD constructs robustly
-        // The old regex <!DOCTYPE[^>]*> fails on multiline and internal subsets
-        // This removes everything between <!DOCTYPE and its true closing >, handling nested brackets
         finalXML = stripDoctypeCompletely(finalXML);
-        // Also strip any remaining entity references as a defense-in-depth measure
         finalXML = finalXML.replace(/<!ENTITY[^>]*>/gi, "");
-        // Strip processing instructions that aren't the XML declaration
         finalXML = finalXML.replace(/<\?(?!xml\s)[^?]*\?>/gi, "");
 
         const parser = new xml2js.Parser({
-            // FIX #4: xml2js/sax security hardening
             strict: true,
             xmlns: false,
-            // Limit entity expansion
             entityExpansionMaxDepth: 1
         });
         const xmlObj = await parser.parseStringPromise(finalXML);
@@ -113,6 +105,8 @@ const { evaluateCondition } = require('./grading');
         const clientResults = [];
 
         const checks = labConfig.checks || [];
+        const showMsgs = (labConfig.show_check_messages !== false);
+        const showMissed = (labConfig.show_missed_points === true);
 
         checks.forEach(check => {
             const pts = parseInt(check.points);
@@ -135,7 +129,13 @@ const { evaluateCondition } = require('./grading');
 
             if (pass) {
                 currentScore += pts;
-                clientResults.push({ message: check.message, points: pts });
+                if (showMsgs) {
+                    clientResults.push({ message: check.message, points: pts, passed: true });
+                }
+            } else {
+                if (showMsgs && showMissed) {
+                    clientResults.push({ message: check.message, points: 0, passed: false });
+                }
             }
 
             serverResults.push({
@@ -150,7 +150,6 @@ const { evaluateCondition } = require('./grading');
         if (currentScore < 0) currentScore = 0;
         report("Complete", 100);
 
-        const showMsgs = (labConfig.show_check_messages !== false);
         const showScore = (labConfig.show_score !== false);
 
         parentPort.postMessage({
@@ -166,18 +165,11 @@ const { evaluateCondition } = require('./grading');
         });
 
     } catch (err) {
-        // FIX #9: Sanitize error messages - never leak internal paths or stack traces
         const safeMessage = sanitizeErrorMessage(err.message);
         parentPort.postMessage({ type: 'error', msg: safeMessage });
     }
 })();
 
-/**
- * FIX #4: Robust DOCTYPE stripping that handles:
- * - Multiline DOCTYPE declarations
- * - Internal subsets with nested brackets: <!DOCTYPE foo [ <!ENTITY ...> ]>
- * - Multiple DOCTYPE declarations
- */
 function stripDoctypeCompletely(xml) {
     let result = xml;
     let safety = 0;
@@ -186,7 +178,6 @@ function stripDoctypeCompletely(xml) {
         const dtStart = result.search(/<!DOCTYPE/i);
         if (dtStart === -1) break;
         
-        // Find the true end, accounting for internal subset brackets
         let depth = 0;
         let i = dtStart;
         let found = false;
@@ -203,7 +194,6 @@ function stripDoctypeCompletely(xml) {
         if (found) {
             result = result.substring(0, dtStart) + result.substring(i + 1);
         } else {
-            // Malformed DOCTYPE - strip from start to end of string as safety measure
             result = result.substring(0, dtStart);
             break;
         }
@@ -213,10 +203,6 @@ function stripDoctypeCompletely(xml) {
     return result;
 }
 
-/**
- * FIX #9: Map known error patterns to safe messages.
- * Never forward raw err.message to the client.
- */
 function sanitizeErrorMessage(rawMessage) {
     if (!rawMessage) return "An unknown error occurred during grading.";
     
@@ -229,6 +215,5 @@ function sanitizeErrorMessage(rawMessage) {
     if (msg.includes('invalid xml') || msg.includes('not well-formed') || msg.includes('xml')) return "The file contains invalid or malformed data.";
     if (msg.includes('toml') || msg.includes('parse')) return "Server configuration error. Contact your instructor.";
     
-    // Default: generic message, never leak the raw error
     return "An error occurred while processing your submission.";
 }
