@@ -115,6 +115,13 @@ const { evaluateCondition } = require('./grading');
             const device = devMap[check.device];
             let pass = false;
 
+            let checkContext = 'global';
+            if (check.pass && check.pass.length > 0) {
+                checkContext = check.pass[0].context || (check.pass[0].type.startsWith('Xml') ? 'hardware' : 'global');
+            } else if (check.passoverride && check.passoverride.length > 0) {
+                checkContext = check.passoverride[0].context || 'global';
+            }
+
             if (device) {
                 const failCond = check.fail && check.fail.some(c => evaluateCondition(device, c));
                 if (!failCond) {
@@ -130,17 +137,18 @@ const { evaluateCondition } = require('./grading');
             if (pass) {
                 currentScore += pts;
                 if (showMsgs) {
-                    clientResults.push({ message: check.message, points: pts, passed: true });
+                    clientResults.push({ message: check.message, points: pts, passed: true, device: check.device, context: checkContext });
                 }
             } else {
                 if (showMsgs && showMissed) {
-                    clientResults.push({ message: check.message, points: 0, passed: false });
+                    clientResults.push({ message: check.message, points: 0, passed: false, device: check.device, context: checkContext });
                 }
             }
 
             serverResults.push({
                 message: check.message,
                 device: check.device,
+                context: checkContext,
                 possible: pts,
                 awarded: pass ? pts : 0,
                 passed: pass

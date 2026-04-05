@@ -308,7 +308,7 @@ router.get('/leaderboard', (req, res) => {
     
     const cfg = getConfig();
     const labs = cfg.labs || [];
-    const quizzes = (cfg.quizzes || []).filter(q => q.enabled !== false);
+    const quizzes = cfg.quizzes || [];
     const allChallenges = [...labs, ...quizzes];
 
     const users = db.prepare('SELECT id, username FROM users').all();
@@ -379,7 +379,13 @@ router.get('/history', (req, res) => {
             if (type === 'quiz') {
                 clientDetails = details; 
             } else {
-                clientDetails = details.map(item => ({ message: item.message, points: item.awarded, passed: item.passed }));
+                clientDetails = details.map(item => ({ 
+                    message: item.message, 
+                    points: item.awarded, 
+                    passed: item.passed,
+                    device: item.device,
+                    context: item.context
+                }));
             }
         }
         
