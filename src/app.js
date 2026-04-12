@@ -40,7 +40,7 @@ const sessionMiddleware = session({
     cookie: {
         httpOnly: true,  
         // Explicitly require secure cookies in production
-        secure: auto,
+        secure: 'auto',
         // 'lax' prevents browsers from dropping the cookie during redirects/refreshes
         sameSite: 'lax',
         maxAge: 24 * 60 * 60 * 1000
