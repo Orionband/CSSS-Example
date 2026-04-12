@@ -87,7 +87,17 @@ const { evaluateCondition } = require('./grading');
         });
         const xmlObj = await parser.parseStringPromise(finalXML);
         const devMap = {};
-        const devList = xmlObj?.PACKETTRACER5_ACTIVITY?.PACKETTRACER5?.[0]?.NETWORK?.[0]?.DEVICES?.[0]?.DEVICE || [];
+        
+        // Support both .pka (Activity) and .pkt (Network) XML structures
+        let ptBlocks = [];
+        if (xmlObj && xmlObj.PACKETTRACER5_ACTIVITY && xmlObj.PACKETTRACER5_ACTIVITY.PACKETTRACER5) {
+            ptBlocks = xmlObj.PACKETTRACER5_ACTIVITY.PACKETTRACER5;
+        } else if (xmlObj && xmlObj.PACKETTRACER5) {
+            ptBlocks = Array.isArray(xmlObj.PACKETTRACER5) ? xmlObj.PACKETTRACER5 : [xmlObj.PACKETTRACER5];
+        }
+
+        // The student's workspace is always the first PACKETTRACER5 block
+        const devList = ptBlocks.length > 0 ? (ptBlocks[0]?.NETWORK?.[0]?.DEVICES?.[0]?.DEVICE || []) : [];
         
         devList.forEach(d => {
             const nameObj = d.ENGINE[0].NAME[0];

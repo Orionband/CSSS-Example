@@ -12,7 +12,7 @@ const path = require('path');
 const { Worker } = require('worker_threads');
 
 const db = require('./database');
-const { getConfig, getRawConfig } = require('./config');
+const { getConfig, getRawConfig, isWindowOpen } = require('./config');
 const authRoutes = require('./routes/auth');
 const quizRoutes = require('./routes/quiz');
 
@@ -49,6 +49,7 @@ const sessionMiddleware = session({
 app.use(sessionMiddleware);
 io.engine.use(sessionMiddleware);
 
+// Security headers
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
@@ -66,6 +67,7 @@ app.use((req, res, next) => {
     next();
 });
 
+// CSRF token generation
 app.use((req, res, next) => {
     if (req.session && !req.session.csrfToken) {
         req.session.csrfToken = crypto.randomBytes(32).toString('hex');
@@ -73,12 +75,16 @@ app.use((req, res, next) => {
     next();
 });
 
+// CSRF validation for state-changing requests
 app.use((req, res, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+    
     const clientToken = req.headers['x-csrf-token'] || (req.body && req.body._csrf);
+    
     if (!req.session || !req.session.csrfToken || clientToken !== req.session.csrfToken) {
         return res.status(403).json({ error: "Invalid or missing CSRF token." });
     }
+    
     next();
 });
 
@@ -87,21 +93,6 @@ app.use('/api', authRoutes);
 app.use('/api/quiz', quizRoutes);
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../index.html')));
-
-function isWindowOpen(challenge) {
-    if (!challenge) return true;
-    if (!challenge.comp_start && !challenge.comp_end) return true;
-    const now = Date.now();
-    if (challenge.comp_start) {
-        const start = new Date(challenge.comp_start).getTime();
-        if (!isNaN(start) && now < start) return false;
-    }
-    if (challenge.comp_end) {
-        const end = new Date(challenge.comp_end).getTime();
-        if (!isNaN(end) && now > end) return false;
-    }
-    return true;
-}
 
 const MAX_WORKERS = parseInt(process.env.MAX_WORKERS) || 4;
 let activeWorkers = 0;
@@ -146,7 +137,12 @@ function processWorkerQueue() {
                 if (!fs.existsSync(capturesDir)) fs.mkdirSync(capturesDir, { recursive: true });
                 const safeTitle = targetLab.title.replace(/[^a-z0-9]/gi, '_');
                 const baseName = `${safeTitle}_${socketUser.unique_id}_${timestamp}`;
-                if (process.env.RETAIN_PKA === 'true') fs.writeFileSync(path.join(capturesDir, `${baseName}.pka`), Buffer.from(workerData.fileData));
+                 if (process.env.RETAIN_PKA === 'true') {
+					fs.writeFileSync(path.join(capturesDir, `${baseName}.pka`), Buffer.from(workerData.fileData));
+
+					// Also retain PKT when PKA is retained
+					fs.writeFileSync(path.join(capturesDir, `${baseName}.pkt`), Buffer.from(workerData.fileData));
+				}
                 if (process.env.RETAIN_XML === 'true') fs.writeFileSync(path.join(capturesDir, `${baseName}.xml`), msg.xml);
             }
 
@@ -181,6 +177,7 @@ function processWorkerQueue() {
     });
 }
 
+// Sweepers
 setInterval(() => {
     try {
         db.prepare("DELETE FROM active_locks WHERE timestamp < datetime('now', '-5 minutes')").run();
@@ -253,7 +250,7 @@ io.on('connection', (socket) => {
             socketUser = null;
             return socket.emit('err', "Session expired. Please refresh and log in again.");
         }
-        
+
         const clientToken = packet._csrf;
         if (!clientToken || clientToken !== sess.csrfToken) {
             return socket.emit('err', "Invalid CSRF token. Please refresh the page.");
@@ -370,5 +367,5 @@ setInterval(() => {
     }
 }, 24 * 60 * 60 * 1000);
 
-const PORT = 3000;
+const PORT = 10000;
 server.listen(PORT, () => console.log(`CSSS Server running on http://localhost:${PORT}`));

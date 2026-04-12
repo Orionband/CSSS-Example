@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../database');
-const { getConfig } = require('../config');
+const { getConfig, isWindowOpen } = require('../config');
 const router = express.Router();
 const { customAlphabet } = require('nanoid');
 const rateLimit = require('express-rate-limit');
@@ -18,21 +18,6 @@ const DUMMY_HASH = bcrypt.hashSync('__dummy_timing_safe_value_never_matches__', 
 const registerLimiter = rateLimit({ windowMs: 24*60*60*1000, max: 10, standardHeaders: true, legacyHeaders: false });
 const loginLimiter = rateLimit({ windowMs: 5*60*1000, max: 5, standardHeaders: true, legacyHeaders: false });
 
-function isWindowOpen(challenge) {
-    if (!challenge) return true;
-    if (!challenge.comp_start && !challenge.comp_end) return true;
-    const now = Date.now();
-    if (challenge.comp_start) {
-        const start = new Date(challenge.comp_start).getTime();
-        if (!isNaN(start) && now < start) return false;
-    }
-    if (challenge.comp_end) {
-        const end = new Date(challenge.comp_end).getTime();
-        if (!isNaN(end) && now > end) return false;
-    }
-    return true;
-}
-
 router.get('/csrf-token', (req, res) => {
     if (!req.session) return res.status(500).json({ error: "Session unavailable" });
     if (!req.session.csrfToken) {
@@ -45,6 +30,18 @@ router.get('/csrf-token', (req, res) => {
 router.post('/register', registerLimiter, async (req, res) => {
     if (process.env.ALLOW_REGISTRATION === 'false') {
         return res.status(403).json({ error: "Registration is currently disabled by the administrator." });
+    }
+
+    const cfg = getConfig();
+    const allChallenges = [...(cfg.labs || []), ...(cfg.quizzes || [])];
+    
+    let anyOpen = allChallenges.length === 0;
+    for (const c of allChallenges) {
+        if (isWindowOpen(c)) { anyOpen = true; break; }
+    }
+    
+    if (!anyOpen) {
+        return res.status(403).json({ error: "Registration is currently closed outside of the competition window." });
     }
 
     const { username, email, password } = req.body;
@@ -125,7 +122,6 @@ router.get('/me', (req, res) => {
 router.get('/config', (req, res) => {
     const cfg = getConfig();
     const safeLabs = (cfg.labs || []).map(l => ({ id: l.id, title: l.title, type: 'lab' }));
-    
     const safeQuizzes = (cfg.quizzes || []).map(q => ({ id: q.id, title: q.title, type: 'quiz' }));
 
     const fullTitle = process.env.APP_TITLE || 'CSSS ENGINE';
@@ -359,16 +355,19 @@ router.get('/history', (req, res) => {
     const safeSubmissions = submissions.map(sub => {
         let showScore = true;
         let showDetails = true;
+        let showMissed = false;
         let type = sub.type || 'lab';
 
         if (type === 'quiz') {
             const qCfg = (cfg.quizzes || []).find(q => q.id === sub.lab_id);
             showScore = qCfg ? (qCfg.show_score !== false) : true;
             showDetails = qCfg ? (qCfg.show_corrections !== false) : true;
+            showMissed = qCfg ? (qCfg.show_missed_points === true) : false;
         } else {
             const lCfg = (cfg.labs || []).find(l => l.id === sub.lab_id);
             showScore = lCfg ? (lCfg.show_score !== false) : true;
             showDetails = lCfg ? (lCfg.show_check_messages !== false) : true;
+            showMissed = lCfg ? (lCfg.show_missed_points === true) : false;
         }
 
         let details = [];
@@ -377,9 +376,9 @@ router.get('/history', (req, res) => {
         let clientDetails = null;
         if (showDetails) {
             if (type === 'quiz') {
-                clientDetails = details; 
+                clientDetails = details.filter(item => item.correct || showMissed);
             } else {
-                clientDetails = details.map(item => ({ 
+                clientDetails = details.filter(item => item.passed !== false || showMissed).map(item => ({ 
                     message: item.message, 
                     points: item.awarded, 
                     passed: item.passed,

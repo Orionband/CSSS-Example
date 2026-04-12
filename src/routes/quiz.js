@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const db = require('../database');
-const { getConfig } = require('../config');
+const { getConfig, isWindowOpen } = require('../config');
 const router = express.Router();
 
 function safeObject() {
@@ -21,21 +21,6 @@ function shuffle(array) {
 
 function parseDbTime(dbTimestamp) {
     return new Date(dbTimestamp.replace(' ', 'T') + 'Z').getTime();
-}
-
-function isWindowOpen(challenge) {
-    if (!challenge) return true;
-    if (!challenge.comp_start && !challenge.comp_end) return true;
-    const now = Date.now();
-    if (challenge.comp_start) {
-        const start = new Date(challenge.comp_start).getTime();
-        if (!isNaN(start) && now < start) return false;
-    }
-    if (challenge.comp_end) {
-        const end = new Date(challenge.comp_end).getTime();
-        if (!isNaN(end) && now > end) return false;
-    }
-    return true;
 }
 
 setInterval(() => {
@@ -79,7 +64,7 @@ router.get('/asset/:type/:filename', (req, res) => {
     if (!req.session.userId) return res.status(401).send("Unauthorized");
     
     const type = req.params.type;
-    if (type !== 'image' && type !== 'pka') return res.status(400).send("Invalid asset type");
+    if (type !== 'image' && type !== 'pka' && type !== 'pkt') return res.status(400).send("Invalid asset type");
 
     const safeFilename = path.basename(req.params.filename);
     
@@ -92,8 +77,6 @@ router.get('/asset/:type/:filename', (req, res) => {
     const quizzes = cfg.quizzes || [];
     
     for (const q of quizzes) {
-        if (q.enabled === false) continue;
-
         let containsAsset = false;
         for (const question of (q.questions || [])) {
             if (type === 'image' && question.image === safeFilename) containsAsset = true;
@@ -142,7 +125,7 @@ router.get('/:id', (req, res) => {
     const cfg = getConfig();
     const quiz = (cfg.quizzes || []).find(q => q.id === req.params.id);
 
-    if (!quiz || quiz.enabled === false) return res.status(404).json({ error: "Quiz not found or disabled." });
+    if (!quiz) return res.status(404).json({ error: "Quiz not found." });
 
     let attemptsTaken = 0;
     try {
@@ -164,7 +147,7 @@ router.post('/:id/start', (req, res) => {
 
     const cfg = getConfig();
     const quiz = (cfg.quizzes || []).find(q => q.id === req.params.id);
-    if (!quiz || quiz.enabled === false) return res.status(404).json({ error: "Quiz not found." });
+    if (!quiz) return res.status(404).json({ error: "Quiz not found." });
 
     if (!isWindowOpen(quiz)) {
         return res.status(403).json({ error: "Quiz is currently closed outside of the competition window." });
@@ -230,7 +213,7 @@ router.post('/:id/submit', (req, res) => {
 
     const cfg = getConfig();
     const quiz = (cfg.quizzes || []).find(q => q.id === req.params.id);
-    if (!quiz || quiz.enabled === false) return res.status(404).json({ error: "Quiz not found." });
+    if (!quiz) return res.status(404).json({ error: "Quiz not found." });
 
     const lockKey = `quiz_${req.session.userId}_${quiz.id}`;
     if (!db.acquireLock(lockKey)) {

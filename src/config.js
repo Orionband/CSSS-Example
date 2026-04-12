@@ -2,7 +2,7 @@
 const toml = require('toml');
 const path = require('path');
 
-let config = { options: {}, labs: [], quizzes: [] };
+let config = { labs: [], quizzes: [] };
 let rawConfig = ""; 
 
 function reloadConfig() {
@@ -13,7 +13,6 @@ function reloadConfig() {
             rawConfig = fs.readFileSync(labPath, 'utf-8');
             if (rawConfig.charCodeAt(0) === 0xFEFF) { rawConfig = rawConfig.slice(1); }
             const parsedLab = toml.parse(rawConfig);
-            config.options = parsedLab.options || {};
             config.labs = parsedLab.labs || [];
         }
 
@@ -56,4 +55,8 @@ function isWindowOpen(challenge) {
 
 reloadConfig();
 
-module.exports = { getConfig: () => config, getRawConfig: () => rawConfig };
+module.exports = { 
+    getConfig: () => config, 
+    getRawConfig: () => rawConfig, 
+    isWindowOpen 
+};
