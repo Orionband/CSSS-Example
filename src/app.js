@@ -39,8 +39,10 @@ const sessionMiddleware = session({
     saveUninitialized: false,
     cookie: {
         httpOnly: true,  
-        secure: 'auto',
-        sameSite: 'strict',
+        // Explicitly require secure cookies in production
+        secure: process.env.NODE_ENV === 'production',
+        // 'lax' prevents browsers from dropping the cookie during redirects/refreshes
+        sameSite: 'lax',
         maxAge: 24 * 60 * 60 * 1000
     }
 });
