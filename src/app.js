@@ -17,8 +17,7 @@ const authRoutes = require('./routes/auth');
 const quizRoutes = require('./routes/quiz');
 
 const app = express();
-app.set('trust proxy', 1);
-
+app.set('trust proxy', true);
 const server = http.createServer(app);
 
 const cfgInitial = getConfig();
