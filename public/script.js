@@ -585,12 +585,16 @@ async function submitQuiz() {
     feedList.innerHTML = '';
     
     if (result.breakdown) {
-        result.breakdown.forEach(item => {
-            const div = document.createElement('div');
-            div.className = `quiz-feedback ${item.correct ? 'correct' : 'missed'}`;
-            div.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Missed'}<br><small>Explanation: ${escapeHtml(item.explanation)}</small>`;
-            feedList.appendChild(div);
-        });
+        if (result.breakdown.length === 0) {
+            feedList.innerHTML = "<div style='text-align:center; padding:20px; color:#888'>No awarded points to display.</div>";
+        } else {
+            result.breakdown.forEach(item => {
+                const div = document.createElement('div');
+                div.className = `quiz-feedback ${item.correct ? 'correct' : 'missed'}`;
+                div.innerHTML = `<strong>${escapeHtml(item.message)}</strong>: ${item.correct ? 'Correct' : 'Missed'}<br><small>Explanation: ${escapeHtml(item.explanation)}</small>`;
+                feedList.appendChild(div);
+            });
+        }
     } else {
         feedList.innerHTML = "<em>Corrections hidden by instructor.</em>";
     }
@@ -664,7 +668,7 @@ async function loadHistory() {
 function renderLabResults(container, breakdown) {
     container.innerHTML = '';
     if (!breakdown || breakdown.length === 0) {
-        container.innerHTML = "<div style='text-align:center; padding:20px; color:#888'>No feedback available.</div>";
+        container.innerHTML = "<div style='text-align:center; padding:20px; color:#888'>No awarded points to display.</div>";
         return;
     }
 
@@ -745,6 +749,8 @@ function showHistoryDetail(sub) {
     
     if (sub.details === null) {
         cont.innerHTML = "<div style='text-align:center; color:#888'>Details hidden.</div>";
+    } else if (sub.details.length === 0) {
+        cont.innerHTML = "<div style='text-align:center; color:#888'>No awarded points to display.</div>";
     } else {
         if (sub.type === 'quiz') {
             sub.details.forEach(item => {
